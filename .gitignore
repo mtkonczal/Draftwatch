@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Packaging staging (sdist unpack dir)
+/draftwatch-*/
+
+# Node (maintainer-only vendor build)
+node_modules/
+
+# OS cruft
+.DS_Store
