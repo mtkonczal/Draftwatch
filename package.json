@@ -1,0 +1,23 @@
+{
+  "name": "draftwatch-vendor-build",
+  "private": true,
+  "description": "Maintainer-only build tooling: bundles the vendored frontend libraries into draftwatch/assets/. End users never need Node — the bundle artifacts are committed.",
+  "type": "module",
+  "scripts": {
+    "build:vendor": "node scripts/build_vendor.mjs"
+  },
+  "devDependencies": {
+    "@codemirror/commands": "^6.6.0",
+    "@codemirror/lang-markdown": "^6.3.0",
+    "@codemirror/language": "^6.10.0",
+    "@codemirror/search": "^6.5.0",
+    "@codemirror/state": "^6.4.0",
+    "@codemirror/view": "^6.28.0",
+    "@lezer/highlight": "^1.2.0",
+    "dompurify": "^3.1.0",
+    "esbuild": "^0.23.0",
+    "jsdom": "^29.1.1",
+    "marked": "^13.0.0",
+    "turndown": "^7.2.4"
+  }
+}
