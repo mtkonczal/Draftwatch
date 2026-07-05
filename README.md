@@ -1,30 +1,26 @@
 # Draftwatch
 
-Draftwatch is a lightweight IDE for writers that all them to review an AI agent's edits to their writing the way you'd review a pull request. Draftwatch shows the exact, git-backed word-diff of what changed in a file, lets you keep or revert each change, and commits when you're done.
+Draftwatch is a lightweight IDE for writers. You can use it to create and format new Markdown documents from scratch, or use it to review an AI agent's edits to your writing exactly the way a developer reviews a pull request.
 
-The diff comes from git on your machine, not from the AI vendor and not from a JavaScript approximation. You get independent verification of what the agent actually did.
+When reviewing AI edits, instead of guessing what an LLM changed in your document, Draftwatch shows you the exact, git-backed word-diff. You can step through, keep or revert each change individually, and commit when you're done.
 
-Python 3.9+ and git are the only requirements. The front-end libraries (CodeMirror 6, marked, DOMPurify, Turndown) are vendored and served locally, so it works offline and binds to localhost only.
+Crucially, the diff comes from your local git—not from the AI vendor and not from a JavaScript approximation. You get absolute, independent verification of what the agent or script actually did.
+
+Python 3.9+ and git are the only requirements. The front-end libraries (CodeMirror 6, marked, DOMPurify, Turndown) are vendored and served locally, so Draftwatch works completely offline and binds to localhost only.
 
 ## Install
 
-Install straight from GitHub, no clone needed:
+Draftwatch is available on PyPI. You can install or run it using your preferred Python package manager:
 
 ```bash
-# uv (recommended): run without installing
-uvx --from git+https://github.com/mtkonczal/Draftwatch.git draftwatch draft.md
+# pipx
+pipx install draftwatch
 
-# pipx: install the `draftwatch` command onto your PATH
-pipx install git+https://github.com/mtkonczal/Draftwatch.git
+# uv 
+uv tool install draftwatch
 
-# pip
-pip install git+https://github.com/mtkonczal/Draftwatch.git
-```
-
-For the native app window, add the `app` extra:
-
-```bash
-pipx install "draftwatch[app] @ git+https://github.com/mtkonczal/Draftwatch.git"
+# standard pip
+pip install draftwatch
 ```
 
 ## Usage
@@ -32,7 +28,7 @@ pipx install "draftwatch[app] @ git+https://github.com/mtkonczal/Draftwatch.git"
 Run it from inside any git repository you write in:
 
 ```bash
-draftwatch draft.md
+draftwatch
 ```
 
 Or to start with a specific file:
