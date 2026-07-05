@@ -203,18 +203,39 @@ def latest_diff_event(reader):
 # --------------------------------------------------------------------------- #
 
 def test_1_not_a_repo():
+    # New contract (write-only mode): starting outside a git repo no longer
+    # fails. The server comes up, reports repo:false with no diff, and offers a
+    # one-click `git init` via /api/init-repo that flips it into review mode.
     d = tempfile.mkdtemp(prefix="wt-norepo-")
+    port = free_port()
     try:
         f = os.path.join(d, "draft.md")
         with open(f, "w") as fh:
             fh.write("hi\n")
-        p = subprocess.run(WT_CMD + ["draft.md", "--port", str(free_port())],
-                           cwd=d, env=WT_ENV,
-                           capture_output=True, text=True, timeout=10)
-        ok = (p.returncode != 0 and "not inside a git repository" in p.stderr
-              and "Traceback" not in p.stderr)
-        record(1, "not a repo -> clear error, non-zero exit, no traceback", ok,
-               "exit={}  stderr={!r}".format(p.returncode, p.stderr.strip()))
+        with Server(d, "draft.md", port) as srv:
+            reader = SSEReader(port); reader.start(); time.sleep(0.6)
+            files = json.loads(get(port, "/api/files"))
+            ev0 = latest_diff_event(reader)
+            write_only_ok = (files.get("repo") is False
+                             and "draft.md" in files.get("files", [])
+                             and ev0 is not None and ev0.get("repo") is False
+                             and ev0.get("segments") == [] and ev0.get("baseline") is None)
+            # baseline/commit are blocked until git exists
+            blocked = post(port, "/api/commit", {"message": "x"})
+            blocked_ok = ("error" in blocked and "write-only" in blocked["error"])
+            # initialize git in place, then confirm we flip into repo mode
+            init = post(port, "/api/init-repo", {})
+            time.sleep(0.6)
+            evN = latest_diff_event(reader)
+            reader.stop()
+            init_ok = (init.get("ok") is True
+                       and os.path.isdir(os.path.join(d, ".git"))
+                       and evN is not None and evN.get("repo") is True)
+            no_trace = "Traceback" not in (srv.stdout or "")
+        ok = write_only_ok and blocked_ok and init_ok and no_trace
+        record(1, "no repo -> write-only mode, then /api/init-repo enables review", ok,
+               "write_only={}  commit_blocked={}  init->repo={}  no_traceback={}".format(
+                   write_only_ok, blocked_ok, init_ok, no_trace))
     finally:
         shutil.rmtree(d, ignore_errors=True)
 

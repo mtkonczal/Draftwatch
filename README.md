@@ -25,7 +25,7 @@ pip install draftwatch
 
 ## Usage
 
-Run it from inside any git repository you write in:
+Run it from inside a git repository you write in:
 
 ```bash
 draftwatch
@@ -36,6 +36,15 @@ Or to start with a specific file:
 ```bash
 draftwatch draft.md
 ```
+
+You can also run it outside any git repository. Draftwatch starts in
+**write-only mode** — the editor, preview, and saving all work, but the review
+loop (diffs, revert, commit) is off because there's no git to compare against.
+The right panel offers a one-click **initialize git here** to turn the folder
+into a repo and switch on the full review loop.
+
+Starting a second instance while one is already running just works: if the
+default port is busy, Draftwatch picks a free one and prints the URL.
 
 Draftwatch opens a two-panel review window: your source on the left (a real editor with markdown highlighting, search, and a live preview), the diff against your baseline on the right. Review the changes, revert the ones you don't want, apply, then commit. Committing advances the baseline, so the next agent pass starts clean.
 
@@ -48,7 +57,9 @@ draftwatch [target] [--port 8787] [--host 127.0.0.1] [--no-open] [--app | --no-a
 ```
 
 - `target`: file to watch. Optional; omit it to pick one in the UI.
-- `--port`: default `8787`.
+- `--port`: default `8787`. If omitted and the default is busy, Draftwatch
+  picks a free port automatically; pass `--port` to pin an exact one (it then
+  fails loudly if that port is taken).
 - `--host`: default `127.0.0.1`. Changing this exposes the tool on your network and is not recommended.
 - `--no-open`: don't auto-open a window (useful headless or over SSH).
 - `--app` / `--no-app`: force or disable the native window. It is on by default when pywebview is installed and falls back to the browser otherwise.

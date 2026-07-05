@@ -9,6 +9,7 @@ The diff is always real `git diff --word-diff`, never a JS/Python approximation.
 """
 
 import argparse
+import errno
 import hashlib
 import html
 import json
@@ -28,6 +29,11 @@ from urllib.parse import parse_qs
 # the served page from these constants).
 __version__ = "0.1.0"
 RELEASE_DATE = "2026-07-02"
+
+# Preferred port. When --port is not given, Draftwatch tries this first and
+# falls back to a free port if it is busy (so a second instance can start while
+# the first is running). An explicit --port is honored exactly, with no fallback.
+DEFAULT_PORT = 8787
 
 # --------------------------------------------------------------------------- #
 # git helpers
@@ -210,8 +216,12 @@ def resolve_new_file(root, path):
     return cand
 
 
-def list_repo_files(root, limit=5000):
-    """Repo files for the picker: tracked + non-ignored untracked, sorted, deduped."""
+def list_repo_files(root, has_repo=True, limit=5000):
+    """Files for the picker. In a git repo: tracked + non-ignored untracked,
+    sorted, deduped. In write-only mode (no repo), fall back to a filesystem
+    walk so the picker still works."""
+    if not has_repo:
+        return list_dir_files(root, limit)
     files = []
     rc, out, _ = run_git(["ls-files"], root)
     if rc == 0:
@@ -229,6 +239,32 @@ def list_repo_files(root, limit=5000):
         if len(result) >= limit:
             break
     return result
+
+
+# Directories a filesystem walk skips in write-only mode: version-control,
+# dependency/vendor trees, and build/cache output. Any hidden dir (dot-prefixed)
+# is skipped too. This keeps the picker to files a writer would actually open.
+_WALK_SKIP_DIRS = {
+    "node_modules", "__pycache__", ".venv", "venv", "env",
+    "dist", "build", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".quarto", "_site", "_book", "renv", ".Rproj.user", ".ipynb_checkpoints",
+}
+
+
+def list_dir_files(root, limit=5000):
+    """Plain filesystem walk (write-only mode, no git). Repo-relative paths,
+    sorted, with VCS/vendor/build and hidden directories pruned."""
+    result = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in _WALK_SKIP_DIRS and not d.startswith(".")]
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, fn), root)
+            result.append(rel)
+    result.sort()
+    return result[:limit]
 
 
 # --------------------------------------------------------------------------- #
@@ -515,8 +551,9 @@ def file_mtime(path):
 # --------------------------------------------------------------------------- #
 
 class State:
-    def __init__(self, root, relpath=None, abspath=None):
+    def __init__(self, root, relpath=None, abspath=None, has_repo=True):
         self.root = root
+        self.has_repo = has_repo         # False = write-only mode (no git in `root`)
         self.relpath = relpath           # None until a file is opened
         self.abspath = abspath           # None until a file is opened
         self.lock = threading.RLock()
@@ -560,6 +597,17 @@ class State:
         committed, otherwise the empty tree (whole file reads as new). Resets the
         baseline and mtime."""
         abspath, relpath = resolve_target(self.root, path)   # may raise ValueError
+        if not self.has_repo:
+            # write-only mode: no git, so there is no baseline or diff. The
+            # editor, preview and save still operate on the file directly.
+            with self.lock:
+                self.relpath = relpath
+                self.abspath = abspath
+                self.untracked = True
+                self.last_mtime = file_mtime(abspath)
+                self.baseline = {"kind": "none", "ref": "",
+                                 "label": "no git repository — write-only"}
+            return relpath
         tracked = is_tracked(self.root, relpath)
         short, reldate = head_label(self.root)
         no_head = (not tracked) or (short is None)
@@ -606,11 +654,18 @@ def compute_diff_epoch(root, baseline, raw_text):
 
 
 def compute_payload(state, event_type):
-    """Read the file, run git diff, parse, and build an SSE payload dict."""
+    """Read the file, run git diff, parse, and build an SSE payload dict.
+
+    Every payload carries `repo` (is `root` a git repo) and `repo_dir` (the
+    folder a UI-triggered `git init` would create the repo in). In write-only
+    mode (`repo` False) there is no baseline or diff — the file content still
+    rides along so the editor works."""
     with state.lock:
         baseline = dict(state.baseline)
         relpath = state.relpath
         abspath = state.abspath
+        has_repo = state.has_repo
+        root = state.root
     if abspath is None:
         return {
             "type": event_type,
@@ -621,9 +676,24 @@ def compute_payload(state, event_type):
             "hunks": [],
             "file_mtime": 0.0,
             "diff_epoch": None,
+            "repo": has_repo,
+            "repo_dir": root,
         }
     raw_text = read_text(abspath)
-    diff_text = git_diff_text(state.root, baseline, relpath, abspath)
+    if not has_repo:
+        return {
+            "type": event_type,
+            "file": relpath,
+            "raw_text": raw_text,
+            "baseline": None,
+            "segments": [],
+            "hunks": [],
+            "file_mtime": file_mtime(abspath),
+            "diff_epoch": None,
+            "repo": False,
+            "repo_dir": root,
+        }
+    diff_text = git_diff_text(root, baseline, relpath, abspath)
     segments, hunks = parse_word_diff(diff_text)
     pub_baseline = {k: baseline[k] for k in ("kind", "ref", "label") if k in baseline}
     return {
@@ -634,7 +704,9 @@ def compute_payload(state, event_type):
         "segments": segments,
         "hunks": hunks,
         "file_mtime": file_mtime(abspath),
-        "diff_epoch": compute_diff_epoch(state.root, baseline, raw_text),
+        "diff_epoch": compute_diff_epoch(root, baseline, raw_text),
+        "repo": True,
+        "repo_dir": root,
     }
 
 
@@ -860,6 +932,11 @@ class Handler(BaseHTTPRequestHandler):
                         if k in st.baseline}
             untracked = st.untracked
             relpath = st.relpath
+            has_repo = st.has_repo
+        if not has_repo:
+            # write-only mode: no baselines to offer
+            return self._json({"current": None, "head": None, "push": None,
+                               "commits": [], "untracked": False, "repo": False})
         if relpath is None:
             return self._json({"current": None, "head": None, "push": None,
                                "commits": [], "untracked": False})
@@ -886,7 +963,9 @@ class Handler(BaseHTTPRequestHandler):
         st = self.state
         with st.lock:
             current = st.relpath
-        self._json({"files": list_repo_files(st.root), "current": current})
+            has_repo = st.has_repo
+        self._json({"files": list_repo_files(st.root, has_repo),
+                    "current": current, "repo": has_repo})
 
     # ---- POST ----
     def do_POST(self):
@@ -909,8 +988,36 @@ class Handler(BaseHTTPRequestHandler):
             self._api_new()
         elif path == "/api/close":
             self._api_close()
+        elif path == "/api/init-repo":
+            self._api_init_repo()
         else:
             self._send(404, "not found", "text/plain")
+
+    def _api_init_repo(self):
+        """Turn the write-only root into a git repository (`git init`), then
+        switch to review mode. Nothing is committed: a brand-new repo has no
+        HEAD, so an open file lands on the empty-tree baseline and the normal
+        'start tracking this file' onboarding takes over from there."""
+        st = self.state
+        with st.lock:
+            if st.has_repo:
+                return self._json({"ok": True, "already": True})
+            root = st.root
+        rc, out, err = run_git(["init"], root)
+        if rc != 0:
+            return self._json({"error": "git init failed: " + (err.strip() or out.strip())}, 500)
+        with st.lock:
+            st.has_repo = True
+            cur = st.abspath
+        # re-open the current file so its baseline reflects git (empty tree for
+        # the fresh, commit-less repo); harmless if nothing is open.
+        if cur is not None:
+            try:
+                st.open_file(cur)
+            except Exception as e:
+                sys.stderr.write("draftwatch: reopen after init failed: %s\n" % e)
+        broadcast_diff(st, "update")
+        self._json({"ok": True})
 
     def _api_open(self):
         st = self.state
@@ -929,6 +1036,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_set_baseline(self):
         st = self.state
+        if not st.has_repo:
+            return self._json({"error": "no git repository — write-only mode; "
+                                        "initialize git to review changes"}, 400)
         if not st.has_file():
             return self._json({"error": "no file open"}, 400)
         body = self._read_json()
@@ -973,6 +1083,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_apply(self):
         st = self.state
+        if not st.has_repo:
+            return self._json({"error": "no git repository — write-only mode; "
+                                        "nothing to apply"}, 400)
         if not st.has_file():
             return self._json({"error": "no file open"}, 400)
         body = self._read_json()
@@ -1087,6 +1200,9 @@ class Handler(BaseHTTPRequestHandler):
         the diff clears to zero (review -> revert -> commit -> clean). Earlier
         commits and the push baseline remain available in the dropdown."""
         st = self.state
+        if not st.has_repo:
+            return self._json({"error": "no git repository — write-only mode; "
+                                        "initialize git to commit"}, 400)
         if not st.has_file():
             return self._json({"error": "no file open"}, 400)
         body = self._read_json()
@@ -1615,6 +1731,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-family: var(--mono); font-size: 12px;
   }
 
+  /* write-only mode (no git repo): the review controls are meaningless, so
+     hide them and explain the trade-off in the right panel. */
+  body.no-repo .basepick,
+  body.no-repo .diffhint,
+  body.no-repo #nav,
+  body.no-repo .chgonly,
+  body.no-repo #revert-all,
+  body.no-repo #keep-all,
+  body.no-repo #apply,
+  body.no-repo #commit-msg,
+  body.no-repo #commit-btn { display: none !important; }
+  .onboard .repo-path {
+    display: block; margin: 10px 0; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    font-family: var(--mono); font-size: 12px; word-break: break-all;
+    color: var(--text);
+  }
+  .onboard .warn-note {
+    margin-top: 14px; padding: 10px 12px;
+    background: var(--warn-bg); border: 1px solid var(--warn-border);
+    border-radius: 4px;
+  }
+
   /* editable preview: the rendered reading view doubles as a writing surface.
      Same reading typography as the read-only preview; a soft focus ring makes
      it obvious the text is editable. */
@@ -1777,6 +1916,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   var baseline = null;
   var diffEpoch = null;         // fingerprint of the rendered diff (echoed on apply)
   var currentFile = null;       // relpath of the open file, or null when none
+  var hasRepo = true;           // false = write-only mode (no git repo in the folder)
+  var repoDir = "";             // folder a UI-triggered `git init` would create the repo in
   var WRITING_EXT = [".md", ".markdown", ".qmd", ".txt", ".rst"];
   var changesOnly = false;      // "just changes" collapsed view
   var showEmptyTreeDiff = false; // untracked file: user opted into the full "all added" diff
@@ -2037,6 +2178,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
     var top = scroll.scrollTop;
     var diff = $("diff");
 
+    // Write-only mode: the folder isn't a git repo, so there is nothing to diff.
+    // Explain the trade-off and offer a one-click `git init` (showing the exact
+    // folder that would become a repo) to unlock the review loop.
+    if (!hasRepo) {
+      hunkOrder = []; hunkKind = {}; hunkLine = {}; currentIdx = -1;
+      diff.innerHTML =
+        '<div class="onboard">' +
+        "<p><strong>This folder isn’t a git repository.</strong></p>" +
+        "<p>You’re in <strong>write-only mode</strong>: the editor, preview, and " +
+        "saving all work — but reviewing and reverting an agent’s edits, which is " +
+        "what Draftwatch is for, needs git.</p>" +
+        '<code class="repo-path">' + esc(repoDir || "this folder") + "</code>" +
+        '<p><button id="init-repo" class="apply">initialize git here</button></p>' +
+        '<p class="muted">Runs <code>git init</code> in the folder above. Nothing is ' +
+        "committed until you choose to; you can keep writing either way.</p>" +
+        '<div class="warn-note muted">Until you do, there’s no baseline to compare ' +
+        "against, so an agent’s changes can’t be shown as a diff or reverted here.</div>" +
+        "</div>";
+      $("counts").textContent = "write-only · no git";
+      $("nav").classList.add("hidden");
+      buildMinimap();
+      return;
+    }
+
     // Untracked-file onboarding: with no committed version there is no baseline,
     // so the "diff" is the entire document as one added line per line — thousands
     // of revert controls for content that isn't a reviewable change. Offer to
@@ -2268,6 +2433,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
     } else if (t.id === "show-empty-diff") {
       showEmptyTreeDiff = true;
       renderDiff();
+    } else if (t.id === "init-repo") {
+      t.disabled = true;
+      setStatus("initializing git…");
+      postJSON("/api/init-repo", {}, function (res) {
+        if (res.error) {
+          t.disabled = false;
+          setStatus("git init failed: " + res.error);
+          return;
+        }
+        setStatus("git initialized — reviewing enabled");
+        lastBaselineKind = null;
+        loadBaselines();          // baselines are meaningful now
+        // the server's SSE 'update' (repo:true) re-renders the panel
+      });
     }
   });
 
@@ -2674,6 +2853,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   // ---- baseline dropdown ----
   function loadBaselines() {
     getJSON("/api/baselines").then(function (d) {
+      if (d.repo === false) {           // write-only mode: no baselines to show
+        hasRepo = false;
+        document.body.classList.add("no-repo");
+        $("baseline").innerHTML = "";
+        return;
+      }
       var sel = $("baseline");
       sel.innerHTML = "";
       var opts = [];
@@ -2832,6 +3017,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     hunks = p.hunks || [];
     if ("diff_epoch" in p) diffEpoch = p.diff_epoch;
     baseline = (p.baseline !== undefined) ? p.baseline : baseline;
+    if ("repo" in p) hasRepo = p.repo;
+    if ("repo_dir" in p) repoDir = p.repo_dir || repoDir;
+    document.body.classList.toggle("no-repo", !hasRepo);
     // Hunk ids are content-addressed (server-side hash of the change + its
     // context), so a decision stays valid across payloads as long as that
     // change still exists. Keep decisions; prune only ids that vanished.
@@ -3006,6 +3194,34 @@ def fail(msg, code=2):
     sys.exit(code)
 
 
+def bind_http_server(host, port, handler, explicit_port):
+    """Create the HTTP server, returning a bound ThreadingHTTPServer.
+
+    With an explicit --port, bind exactly that port (the caller reports a clean
+    error if it is busy). Otherwise treat `port` as the *preferred* default:
+    if it is already in use — the "Address already in use" case that stopped a
+    second instance from starting — scan the next few ports and finally fall
+    back to an OS-assigned free port (port 0). The real port is read from the
+    bound socket afterward, so callers must not assume `port`.
+    """
+    if explicit_port:
+        # honor the user's choice; let EADDRINUSE propagate to the caller
+        return ThreadingHTTPServer((host, port), handler)
+    candidates = [port] + [port + i for i in range(1, 16)] + [0]
+    last_err = None
+    for cand in candidates:
+        try:
+            return ThreadingHTTPServer((host, cand), handler)
+        except OSError as e:
+            if e.errno == errno.EADDRINUSE:
+                last_err = e
+                continue
+            raise
+    # candidates ends with port 0, which effectively never collides, so we
+    # only get here on an unusual persistent failure
+    raise last_err
+
+
 def _webview_available():
     try:
         import webview  # noqa: F401
@@ -3049,7 +3265,12 @@ def main(argv=None):
         "target", nargs="?", default=None,
         help="path to the file to watch (relative or absolute). Optional: if omitted, "
              "draftwatch starts in the current git repo and you pick a file in the browser.")
-    parser.add_argument("--port", type=int, default=8787, help="port (default 8787)")
+    parser.add_argument(
+        "--port", type=int, default=None,
+        help="port (default {}). If omitted and the default is busy — e.g. a "
+             "second instance while the first is running — Draftwatch picks a "
+             "free port automatically. Pass --port to pin an exact one."
+             .format(DEFAULT_PORT))
     parser.add_argument(
         "--host", default="127.0.0.1",
         help="bind host (default 127.0.0.1). WARNING: changing this exposes the tool "
@@ -3075,7 +3296,7 @@ def main(argv=None):
     if args.app and args.no_app:
         fail("--app and --no-app are mutually exclusive")
 
-    # --- resolve the git repo root ---
+    # --- resolve the root directory (git repo if there is one) ---
     # With a target: from the target's directory. Without one: from the current dir.
     if args.target is not None:
         if not os.path.exists(args.target):
@@ -3086,36 +3307,57 @@ def main(argv=None):
     else:
         base_dir = os.getcwd()
 
-    if not is_inside_work_tree(base_dir):
-        fail("'%s' is not inside a git repository. Run draftwatch from a git working tree."
-             % base_dir)
-    root = git_toplevel(base_dir)
-    if root is None:
-        fail("could not resolve the git repository root for: %s" % base_dir)
+    # A git repo unlocks the whole review loop (diffs, baselines, revert, commit).
+    # Without one, Draftwatch no longer refuses to start — it opens in write-only
+    # mode (edit/preview/save work; review is off) and the UI offers a one-click
+    # `git init` to turn the folder into a repo. This keeps the "write a new
+    # document from scratch" path usable outside any repository.
+    has_repo = is_inside_work_tree(base_dir)
+    if has_repo:
+        root = git_toplevel(base_dir)
+        if root is None:
+            fail("could not resolve the git repository root for: %s" % base_dir)
+    else:
+        root = os.path.realpath(os.path.abspath(base_dir))
 
-    state = State(root)
+    state = State(root, has_repo=has_repo)
 
-    init_note = "no file open — choose one in the browser"
+    if has_repo:
+        init_note = "no file open — choose one in the browser"
+    else:
+        init_note = "no git repository in {} — write-only mode (init from the UI to review)".format(root)
     if args.target is not None:
         try:
             state.open_file(os.path.abspath(args.target))
         except ValueError as e:
             fail(str(e))
-        init_note = "baseline: " + state.baseline.get("label", "HEAD")
+        if has_repo:
+            init_note = "baseline: " + state.baseline.get("label", "HEAD")
 
     # --- HTTP server ---
     # per-session token: gates every /api/* and /events request (see Handler._guard)
     token = secrets.token_urlsafe(32)
     Handler.state = state
     Handler.token = token
-    Handler.allowed_hosts = {"127.0.0.1:%d" % args.port, "localhost:%d" % args.port}
-    if args.host not in ("127.0.0.1", "localhost", "0.0.0.0"):
-        Handler.allowed_hosts.add("%s:%d" % (args.host, args.port))
+    explicit_port = args.port is not None
+    preferred_port = args.port if explicit_port else DEFAULT_PORT
     try:
-        httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+        httpd = bind_http_server(args.host, preferred_port, Handler, explicit_port)
     except OSError as e:
-        fail("could not bind %s:%d (%s)" % (args.host, args.port, e), code=1)
+        if e.errno == errno.EADDRINUSE:
+            fail("could not bind %s:%d (%s). Another Draftwatch is likely running; "
+                 "omit --port to let it pick a free port automatically."
+                 % (args.host, preferred_port, e), code=1)
+        fail("could not bind %s:%d (%s)" % (args.host, preferred_port, e), code=1)
     httpd.daemon_threads = True
+    # Bind may have landed on a different port than requested (auto-fallback).
+    # Everything downstream — the opened URL and the Host allowlist — must use
+    # the ACTUAL bound port, or the page would load on one port while the
+    # server rejected its requests as a bad Host.
+    bound_port = httpd.server_address[1]
+    Handler.allowed_hosts = {"127.0.0.1:%d" % bound_port, "localhost:%d" % bound_port}
+    if args.host not in ("127.0.0.1", "localhost", "0.0.0.0"):
+        Handler.allowed_hosts.add("%s:%d" % (args.host, bound_port))
 
     stop_event = threading.Event()
     watcher = threading.Thread(target=watch_loop, args=(state, stop_event), daemon=True)
@@ -3123,7 +3365,7 @@ def main(argv=None):
 
     # a browser cannot navigate to 0.0.0.0; always send it to loopback.
     # The token rides in the URL so the page can authenticate its requests.
-    open_url = "http://127.0.0.1:{}/?t={}".format(args.port, token)
+    open_url = "http://127.0.0.1:{}/?t={}".format(bound_port, token)
 
     # Launch surface: the native window is the flagship — used by default when
     # pywebview is installed. --app forces the attempt; --no-app disables it;
@@ -3141,6 +3383,8 @@ def main(argv=None):
     else:
         print("draftwatch · no file open")
     print(init_note)
+    if not explicit_port and bound_port != DEFAULT_PORT:
+        print("port {} was busy — using {} instead".format(DEFAULT_PORT, bound_port))
     if args.host != "127.0.0.1":
         print("WARNING: bound to {} — the tool is exposed on your network.".format(args.host))
     print("open {}   (ctrl-c to stop)".format(open_url), flush=True)

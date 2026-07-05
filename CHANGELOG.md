@@ -5,6 +5,20 @@ All notable changes to draftwatch are recorded here. Versions are git tags
 
 ## Unreleased
 
+- Second instance no longer fails on a busy port. When `--port` is omitted,
+  Draftwatch tries the default (8787) and, if it's taken (e.g. another instance
+  is already running), automatically falls back to the next free port and
+  prints which one it used. An explicit `--port` is still honored exactly and
+  fails loudly on a conflict. The opened URL and the Host allowlist now derive
+  from the actually-bound port.
+- Runs outside a git repository instead of refusing to start. With no repo in
+  the folder, Draftwatch opens in **write-only mode**: the editor, preview, and
+  save all work, while the review loop (baselines, diff, revert, commit) is off.
+  The right panel says so and offers a one-click **initialize git here** button
+  that names the exact folder and runs `git init` via a new `/api/init-repo`
+  endpoint (nothing is committed); the panel then switches into the normal
+  start-tracking flow. The file picker falls back to a filesystem walk when
+  there's no repo. Every SSE payload and `/api/files` now carry a `repo` flag.
 - ⌘/Ctrl-S saves to file from anywhere — source view, editable preview, or the
   diff panel — suppressing the browser's own save dialog.
 - New files: "+ start a new file…" at the top of the file dropdown switches to

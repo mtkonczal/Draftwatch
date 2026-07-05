@@ -121,6 +121,22 @@ try {
   w.__lastES.onmessage({ data: JSON.stringify(untracked) });
   must(w.document.getElementById("start-tracking"), "start-tracking prompt rendered");
 
+  // write-only mode (no git repo): the panel explains the trade-off and offers
+  // a one-click init that names the exact folder; review controls hide.
+  const writeOnly = Object.assign({}, payload, {
+    segments: [], hunks: [], baseline: null, raw_text: "draft\n",
+    file: "draft.md", diff_epoch: "ewo", repo: false, repo_dir: "/tmp/myfolder",
+  });
+  w.__lastES.onmessage({ data: JSON.stringify(writeOnly) });
+  must(w.document.body.classList.contains("no-repo"), "no-repo class applied in write-only mode");
+  must(w.document.getElementById("init-repo"), "init-repo button rendered in write-only mode");
+  must(w.document.getElementById("diff").innerHTML.includes("/tmp/myfolder"),
+       "write-only notice shows the exact folder path");
+  // a repo payload clears write-only mode and restores the review panel
+  const backToRepo = Object.assign({}, payload, { diff_epoch: "e1", repo: true, repo_dir: "/tmp/myfolder" });
+  w.__lastES.onmessage({ data: JSON.stringify(backToRepo) });
+  must(!w.document.body.classList.contains("no-repo"), "no-repo class cleared when repo returns");
+
   // commit is two-step: the message box is hidden until the first click reveals
   // it; a second click (not exercised here) would commit.
   const commitBtn = w.document.getElementById("commit-btn");
