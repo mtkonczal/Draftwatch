@@ -189,6 +189,27 @@ def resolve_target(root, path):
     return cand, os.path.relpath(cand, root)
 
 
+def resolve_new_file(root, path):
+    """Resolve a path for a NEW file inside the repo, or raise ValueError.
+
+    Same containment rules as resolve_target (resolved path must live inside the
+    repo root), but the file must NOT already exist — creating over an existing
+    file would silently clobber it; the picker is the way to open one.
+    """
+    if not path or not path.strip():
+        raise ValueError("no filename given")
+    p = path.strip()
+    cand = os.path.realpath(p if os.path.isabs(p) else os.path.join(root, p))
+    root_prefix = root.rstrip(os.sep) + os.sep
+    if not cand.startswith(root_prefix):
+        raise ValueError("refusing a path outside the repository")
+    if os.path.isdir(cand):
+        raise ValueError("path is a directory, not a file: %s" % path)
+    if os.path.exists(cand):
+        raise ValueError("file already exists: %s — pick it with the file control instead" % path)
+    return cand
+
+
 def list_repo_files(root, limit=5000):
     """Repo files for the picker: tracked + non-ignored untracked, sorted, deduped."""
     files = []
@@ -884,6 +905,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_client_state()
         elif path == "/api/open":
             self._api_open()
+        elif path == "/api/new":
+            self._api_new()
+        elif path == "/api/close":
+            self._api_close()
         else:
             self._send(404, "not found", "text/plain")
 
@@ -989,13 +1014,62 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._json({"error": str(e)}, 500)
 
+    def _api_close(self):
+        """Detach from the watched file and return to the no-file scratch
+        state. Used by the picker's "start a new file": the buffer opens blank
+        and unnamed, and the name is asked at save time (via /api/new), not up
+        front. The file on disk is untouched."""
+        st = self.state
+        with st.lock:
+            st.relpath = None
+            st.abspath = None
+            st.untracked = False
+            st.last_mtime = 0.0
+            st.client_dirty = False
+            st.baseline = {"kind": "head", "ref": "HEAD", "label": "HEAD"}
+        broadcast_diff(st, "update")
+        self._json({"ok": True})
+
+    def _api_new(self):
+        """Create a NEW file inside the repo and switch to watching it. This is
+        how "start typing with no file open" becomes a real file, and what the
+        picker's "start a new file" option calls. Never overwrites an existing
+        file (resolve_new_file refuses); empty text is fine — you can create
+        the file first and write into it after."""
+        st = self.state
+        body = self._read_json()
+        text = body.get("text", "")
+        if not isinstance(text, str):
+            return self._json({"error": "text must be a string"}, 400)
+        try:
+            abspath = resolve_new_file(st.root, body.get("path", ""))
+        except ValueError as e:
+            return self._json({"error": str(e)}, 400)
+        try:
+            parent = os.path.dirname(abspath)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            write_file(abspath, text)
+            relpath = st.open_file(abspath)
+            with st.lock:
+                st.client_dirty = False
+            payload = broadcast_diff(st, "update")
+            return self._json({"ok": True, "file": relpath,
+                               "baseline": payload["baseline"]})
+        except Exception as e:
+            return self._json({"error": str(e)}, 500)
+
     def _api_save(self):
         st = self.state
         if not st.has_file():
-            return self._json({"error": "no file open"}, 400)
+            return self._json({"error": "no file open — use /api/new to create one"}, 400)
         body = self._read_json()
         if "text" not in body:
             return self._json({"error": "missing text"}, 400)
+        if (body.get("path") or "").strip():
+            # creation goes through /api/new; refusing here means a stray
+            # "path" can never silently overwrite the open file
+            return self._json({"error": "save does not take a path — use /api/new to create a file"}, 400)
         text = body["text"]
         try:
             write_file(st.abspath, text)
@@ -1064,13 +1138,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <script src="/static/purify.js"></script>
 <script src="/static/turndown.js"></script>
 <script>
-  // Resolve the saved theme before first paint so there is no light/dark flash.
-  // "auto" (or nothing saved) leaves it to prefers-color-scheme via CSS.
+  // Resolve the saved theme + accent before first paint so there is no
+  // light/dark (or color) flash. "auto" (or nothing saved) leaves the theme to
+  // prefers-color-scheme via CSS; no saved accent means the default blue. An
+  // unknown stored accent value simply matches no CSS rule -> blue.
   try {
     var _t = localStorage.getItem("draftwatch-theme");
     if (_t === "light" || _t === "dark") {
       document.documentElement.setAttribute("data-theme", _t);
     }
+    var _a = localStorage.getItem("draftwatch-accent");
+    if (_a) document.documentElement.setAttribute("data-accent", _a);
   } catch (e) {}
 </script>
 <style>
@@ -1131,6 +1209,78 @@ INDEX_HTML = r"""<!DOCTYPE html>
     --warn-bg: #3c3620;
     --warn-border: #8a7320;
   }
+  /* Color themes: the picker restyles the WHOLE look, not just the accent —
+     each color re-tints the paper (--bg), panels, borders, and ink the same
+     way the default blue does: tinted paper, darker panel, deeper accent that
+     holds button text at >=4.5:1. All stay in the same muted editorial
+     register; "graphite" is the monochrome one (Cursor-style neutral greys).
+     The add-green / del-red / warn-amber stay strictly semantic and identical
+     across themes. Chosen via data-accent on <html> (persisted in
+     localStorage, applied pre-paint by the script in <head>); no attribute =
+     blue. Dark values are declared twice (manual override + auto/OS path),
+     mirroring how the base theme does it. */
+  :root[data-accent="teal"] {
+    --bg: #f1faf7; --panel: #e2f1ec; --border: #c8e0d8;
+    --text: #1c2b27; --muted: #5c6f69;
+    --accent: #1e7b70; --accent-fg: #f2fbf9;
+  }
+  :root[data-accent="iris"] {
+    --bg: #f6f5fc; --panel: #eceaf6; --border: #d8d4ea;
+    --text: #24222f; --muted: #67637a;
+    --accent: #6a5a96; --accent-fg: #f7f5fc;
+  }
+  :root[data-accent="plum"] {
+    --bg: #faf5f9; --panel: #f2e8ef; --border: #e2d0dc;
+    --text: #2c222a; --muted: #74616e;
+    --accent: #8a4a78; --accent-fg: #fdf6fb;
+  }
+  :root[data-accent="graphite"] {
+    --bg: #f6f6f7; --panel: #ebebed; --border: #d7d7db;
+    --text: #222327; --muted: #64666d;
+    --accent: #44464d; --accent-fg: #f7f7f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme])[data-accent="teal"] {
+      --bg: #101c19; --panel: #172622; --border: #2a3f38;
+      --text: #e3efeb; --muted: #8fa8a0;
+      --accent: #5cbcae; --accent-fg: #07211c;
+    }
+    :root:not([data-theme])[data-accent="iris"] {
+      --bg: #16141f; --panel: #1f1c2b; --border: #353046;
+      --text: #e9e6f2; --muted: #9d97b4;
+      --accent: #a89bd8; --accent-fg: #171129;
+    }
+    :root:not([data-theme])[data-accent="plum"] {
+      --bg: #1d141a; --panel: #291c25; --border: #43303e;
+      --text: #f0e7ed; --muted: #ab93a3;
+      --accent: #c893b6; --accent-fg: #260f1f;
+    }
+    :root:not([data-theme])[data-accent="graphite"] {
+      --bg: #161718; --panel: #1e1f21; --border: #323438;
+      --text: #e8e9ea; --muted: #989aa1;
+      --accent: #b3b6bd; --accent-fg: #141517;
+    }
+  }
+  :root[data-theme="dark"][data-accent="teal"] {
+    --bg: #101c19; --panel: #172622; --border: #2a3f38;
+    --text: #e3efeb; --muted: #8fa8a0;
+    --accent: #5cbcae; --accent-fg: #07211c;
+  }
+  :root[data-theme="dark"][data-accent="iris"] {
+    --bg: #16141f; --panel: #1f1c2b; --border: #353046;
+    --text: #e9e6f2; --muted: #9d97b4;
+    --accent: #a89bd8; --accent-fg: #171129;
+  }
+  :root[data-theme="dark"][data-accent="plum"] {
+    --bg: #1d141a; --panel: #291c25; --border: #43303e;
+    --text: #f0e7ed; --muted: #ab93a3;
+    --accent: #c893b6; --accent-fg: #260f1f;
+  }
+  :root[data-theme="dark"][data-accent="graphite"] {
+    --bg: #161718; --panel: #1e1f21; --border: #323438;
+    --text: #e8e9ea; --muted: #989aa1;
+    --accent: #b3b6bd; --accent-fg: #141517;
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; overscroll-behavior: none; }
 
@@ -1167,10 +1317,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   /* Two fixed rows that never wrap into each other, so the layout stays put
      regardless of title length or window width:
-       row 1 = file context + mode (title, file picker, review/edit)
-       row 2 = state + diff target (status line, baseline selector)
-     The variable-length status line lives on its own row and ellipsizes
-     instead of pushing the controls around. */
+       row 1 = what you're looking at (title, file picker, baseline selector —
+               file and baseline split the row roughly in half)
+       row 2 = actions (preview/format/save on the left; theme, accent color,
+               about on the right; transient status in between)
+     The variable-length status line ellipsizes instead of pushing the
+     controls around. */
   header .bar {
     display: flex;
     align-items: center;
@@ -1220,6 +1372,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     cursor: pointer;
   }
   button:hover, select:hover { border-color: var(--accent); }
+  /* the accent-picker's color dot — bound to var(--accent), so it always
+     shows the live color */
+  #accent-toggle .swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); border: 1px solid var(--border);
+    margin-right: 6px; vertical-align: -1px;
+  }
 
   #banner {
     display: none;
@@ -1367,6 +1526,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .ctrl button.rev { color: var(--del-fg); }
   .ctrl button.rev.on { background: var(--del-bg); color: var(--del-fg); border-color: var(--del-fg); font-weight: 700; }
+  /* diff panel header: title left, the one-line how-to right. The hint
+     inherits the h2 type exactly (same font, size, weight, uppercase,
+     letter-spacing) so the two read as one header line. The hint's ✗ is drawn
+     like the per-hunk buttons so the mapping is visual, not verbal — the
+     buttons themselves stay a bare ✗ to keep dense diffs calm. The chip's
+     fixed line-height + negative margin keep it from stretching the header
+     taller than the left panel's. */
+  h2.diffhead { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .diffhint { white-space: nowrap; }
+  .diffhint .xdemo {
+    display: inline-block; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 4px; margin: -2px 0; color: var(--del-fg);
+    font-size: 10px; line-height: 13px;
+  }
   .empty { color: var(--muted); font-style: italic; }
   footer {
     border-top: 1px solid var(--border);
@@ -1398,8 +1571,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .hidden { display: none !important; }
   h2.unsaved { color: var(--del-fg); }
   button.attn { box-shadow: 0 0 0 2px var(--warn-border); }
-  .filepick { display: inline-flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0; }
-  .filepick #file-select { flex: 1 1 auto; min-width: 0; width: 100%; }
+  /* file + baseline share the top row, half each (flex-basis 0 splits the
+     leftover space evenly regardless of content width) */
+  .filepick, .basepick { display: inline-flex; align-items: center; gap: 5px; flex: 1 1 0; min-width: 0; }
+  .filepick select, .basepick select { flex: 1 1 auto; min-width: 0; width: 100%; }
   #empty-msg { color: var(--muted); font-style: italic; padding: 16px 4px; }
 
   /* right panel: scroll area + change-map gutter side by side */
@@ -1494,13 +1669,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <label class="status" for="file-select">file</label>
       <select id="file-select" title="pick a writing file in this repo"></select>
     </span>
-    <button id="theme-toggle" title="theme: auto / light / dark">theme: auto</button>
-    <button id="about-btn" title="what is Draftwatch?">about</button>
-  </div>
-  <div class="bar">
-    <label class="status" for="baseline">baseline</label>
-    <select id="baseline"></select>
-    <span class="status" id="status">connecting&hellip;</span>
+    <span class="basepick">
+      <label class="status" for="baseline">baseline</label>
+      <select id="baseline"></select>
+    </span>
   </div>
   <div class="bar" id="edit-toolbar">
     <button id="view-toggle" title="switch the left panel between markdown source and a rendered reading view">preview</button>
@@ -1510,7 +1682,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <button id="fmt-italic" title="italic (⌘/Ctrl-I)"><i>I</i></button>
       <button id="fmt-link" title="link (⌘/Ctrl-K)">link</button>
     </span>
-    <button id="save" class="apply">save to file</button>
+    <button id="save" class="apply" title="write the buffer to disk (⌘/Ctrl-S)">save to file</button>
+    <span class="status" id="status">connecting&hellip;</span>
+    <button id="theme-toggle" title="theme: auto / light / dark">theme: auto</button>
+    <button id="accent-toggle" title="accent color — click to cycle"><span class="swatch"></span><span id="accent-name">blue</span></button>
+    <button id="about-btn" title="what is Draftwatch?">about</button>
   </div>
 </header>
 
@@ -1531,7 +1707,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <strong>git itself produces on your machine</strong> — not an AI's summary,
       not a JavaScript guess. You keep or revert each change, then commit.</p>
     <h3>The review loop</h3>
-    <p>Read the diff on the right. Toggle <code>revert ✗</code> on any change you
+    <p>Read the diff on the right. Click the <code>✗</code> beside any change you
       don't want. <strong>Apply</strong> writes the result to disk — keeping the
       rest, reverting the marked spans. <strong>Commit</strong> records the file
       to git; the baseline advances to that commit, the diff clears to zero, and
@@ -1564,7 +1740,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div id="preview" class="scroll hidden"></div>
   </section>
   <section class="panel right">
-    <h2>diff vs baseline</h2>
+    <h2 class="diffhead"><span>diff vs baseline</span><span class="diffhint">click <span class="xdemo">✗</span> to revert a change</span></h2>
     <div class="right-body">
       <div class="scroll" id="right-scroll">
         <div id="diff"></div>
@@ -1744,7 +1920,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       CM.highlightSelectionMatches(),
       wrapInput,
       CM.keymap.of(fmtKeymap.concat(CM.searchKeymap, CM.historyKeymap, CM.defaultKeymap)),
-      CM.placeholder("No file open — pick one with the “file” control above."),
+      CM.placeholder("No file open — pick one with the “file” control above, or start typing and save (⌘S) to create a new file."),
       CM.EditorView.updateListener.of(function (u) {
         if (u.docChanged && !applyingRemote) {
           if (!dirty) { dirty = true; reportClientState(); }
@@ -1841,11 +2017,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
         }
         parts.push('<span class="hunk' + (reverted ? " hunk-revert" : "") + '" id="hunk-' + h +
                    '" data-hunk="' + h + '">' + inner.join("") + "</span>");
+        // a bare ✗ (state carried by the .on highlight + the title text) —
+        // the wordy revert/reverted labels made heavily edited lines unreadable
         parts.push(
           '<span class="ctrl" data-hunk="' + h + '">' +
           '<button class="rev' + (reverted ? " on" : "") + '" data-hunk="' + h +
-          '" title="' + (reverted ? "reverted — click to keep" : "revert this change to the baseline") +
-          '">' + (reverted ? "reverted ✗" : "revert ✗") + "</button>" +
+          '" title="' + (reverted ? "reverted — click to keep this change" : "revert this change to the baseline") +
+          '">✗</button>' +
           "</span>"
         );
       }
@@ -2206,7 +2384,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     else if (e.key === "Escape") { e.preventDefault(); disarmCommit(); $("commit-btn").focus(); }
   });
 
-  $("save").addEventListener("click", function () {
+  // Save the buffer to disk, from either view (a pending preview edit is
+  // flushed into the source buffer first, so what you see is what is saved).
+  // With no file open, the buffer — even an empty one — is saved as a NEW
+  // file: prompt for a name, create it in the repo, and start watching it.
+  function doSave() {
+    if (previewMode) flushPreviewSync();
+    if (!currentFile) { saveAsNewFile(); return; }
     var text = editorText();
     $("save").disabled = true;
     // Our own save is not a disk conflict. Clear dirty *now*, before the save's
@@ -2225,6 +2409,99 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       setStatus("saved");
     });
+  }
+
+  // Prompt for a name and create a new file (via /api/new), then watch it.
+  // `text` seeds the file's contents ("" for a fresh empty file). Used by
+  // save-with-no-file-open and the picker's "start a new file" option;
+  // onDone(false) lets the caller reset UI state after a cancel/failure.
+  function createNewFile(text, onDone) {
+    var name = window.prompt(
+      "Create a new file in this repository.\n\nName (relative to the repo root):",
+      "untitled.md");
+    if (name == null || !name.trim()) { if (onDone) onDone(false); return; }
+    $("save").disabled = true;
+    var wasDirty = dirty;
+    dirty = false;                    // our own save is not a disk conflict
+    reportClientState();
+    updateLeftTitle();
+    postJSON("/api/new", { path: name.trim(), text: text }, function (res) {
+      $("save").disabled = false;
+      if (res.error) {
+        dirty = wasDirty;
+        reportClientState();
+        updateLeftTitle();
+        setStatus("new file failed: " + res.error);
+        if (onDone) onDone(false);
+        return;
+      }
+      currentFile = res.file;
+      lastBaselineKind = null;
+      currentIdx = -1;
+      syncFileControls();
+      loadBaselines();
+      loadFiles();
+      setStatus("created " + res.file);
+      // the server's SSE 'update' populates the panels
+      if (onDone) onDone(true);
+    });
+  }
+
+  function saveAsNewFile() {
+    createNewFile(editorText());
+  }
+
+  // The picker's "start a new file" option: switch to a blank, unnamed
+  // scratch buffer and just let you write. No name is asked here — saving
+  // (button or ⌘S) prompts for one, via the same no-file path as starting
+  // draftwatch without a target. The previously open file stays untouched
+  // on disk.
+  function startNewFile() {
+    if (currentFile === null) {       // already in the scratch buffer
+      syncFileControls();
+      ed.focus();
+      return;
+    }
+    if (dirty &&
+        !window.confirm("You have unsaved edits.\n\nOK = leave them behind and start a new file.\nCancel = stay on the current file.")) {
+      syncFileControls();
+      return;
+    }
+    var wasDirty = dirty;
+    dirty = false;                    // cleared pre-post so the SSE echo can't trip the banner
+    reportClientState();
+    updateLeftTitle();
+    postJSON("/api/close", {}, function (res) {
+      if (res.error) {
+        dirty = wasDirty;
+        reportClientState();
+        updateLeftTitle();
+        setStatus("new file failed: " + res.error);
+        syncFileControls();
+        return;
+      }
+      currentFile = null;
+      lastBaselineKind = null;
+      currentIdx = -1;
+      syncFileControls();
+      loadBaselines();
+      setStatus("new file — start typing; save (⌘S) will ask for a name");
+      ed.focus();
+      // the server's SSE 'update' (file: null) clears the panels
+    });
+  }
+
+  $("save").addEventListener("click", doSave);
+
+  // ⌘/Ctrl-S saves from anywhere — source view, editable preview, even with
+  // focus in the diff panel. preventDefault suppresses the browser's own
+  // save-page dialog, which is never what you want here.
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey &&
+        (e.key === "s" || e.key === "S")) {
+      e.preventDefault();
+      doSave();
+    }
   });
 
   // ---- edit state tracking ----
@@ -2459,6 +2736,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       var sel = $("file-select"); sel.innerHTML = "";       // dropdown: writing files
       var ph = document.createElement("option");
       ph.value = ""; ph.textContent = "— pick a file —"; sel.appendChild(ph);
+      var nf = document.createElement("option");            // create-a-file entry, always on top
+      nf.value = "__new__"; nf.textContent = "+ start a new file…"; sel.appendChild(nf);
       var listed = {};
       files.forEach(function (f) {
         var low = f.toLowerCase();
@@ -2504,7 +2783,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       // the server's SSE 'update' will populate the panels
     });
   }
-  $("file-select").addEventListener("change", function () { if (this.value) openFile(this.value); });
+  $("file-select").addEventListener("change", function () {
+    if (this.value === "__new__") { startNewFile(); return; }
+    if (this.value) openFile(this.value);
+  });
 
   // loadFiles() previously only ran once at page load, so a file added (or removed)
   // on disk after that never showed up in the dropdown for the rest of the session.
@@ -2586,7 +2868,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   // directly via setStatus() elsewhere — "disconnected – retrying…", "saved",
   // "apply failed: ...", and so on).
   function setStatusBaseline() {
-    if (!currentFile) { setStatus("no file open — pick a file above"); return; }
+    if (!currentFile) { setStatus("no file open — pick a file above, or start typing and save"); return; }
     // don't let a routine SSE payload wipe fresh transient feedback
     // ("saved", "committed · abc1234", ...) the instant it appears
     if (Date.now() - lastTransientTs > 4000) setStatus("");
@@ -2660,6 +2942,33 @@ INDEX_HTML = r"""<!DOCTYPE html>
   $("theme-toggle").addEventListener("click", function () {
     var i = THEMES.indexOf(currentTheme());
     applyTheme(THEMES[(i + 1) % THEMES.length]);
+  });
+
+  // ---- color theme (blue / teal / iris / plum / graphite) ----
+  // Same persistence pattern as light/dark: data-accent on <html>, remembered
+  // in localStorage, applied pre-paint by the script in <head>. "blue" is the
+  // default (attribute removed). Each color restyles the whole surface — bg,
+  // panels, borders, ink, accent — and defines a dark-mode variant, so the
+  // light/dark toggle keeps working per color. An unknown stored value
+  // matches no CSS and currentAccent() maps it back to "blue".
+  var ACCENTS = ["blue", "teal", "iris", "plum", "graphite"];
+  function currentAccent() {
+    var a = document.documentElement.getAttribute("data-accent");
+    return ACCENTS.indexOf(a) > 0 ? a : "blue";
+  }
+  function applyAccent(a) {
+    if (a === "blue") document.documentElement.removeAttribute("data-accent");
+    else document.documentElement.setAttribute("data-accent", a);
+    try {
+      if (a === "blue") localStorage.removeItem("draftwatch-accent");
+      else localStorage.setItem("draftwatch-accent", a);
+    } catch (e) {}
+    $("accent-name").textContent = a;
+  }
+  applyAccent(currentAccent());   // sync the label (and prune a bad stored value)
+  $("accent-toggle").addEventListener("click", function () {
+    var i = ACCENTS.indexOf(currentAccent());
+    applyAccent(ACCENTS[(i + 1) % ACCENTS.length]);
   });
 
   // ---- about modal ----

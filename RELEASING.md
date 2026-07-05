@@ -7,13 +7,14 @@ one-time PyPI setup below is done.
 
 ## One-time setup (before the first publish)
 
-1. **Move draftwatch to its own repository** (planned; see the backlog). Trusted
-   publishing binds to a specific `owner/repo`, so do the split first.
-2. Create an account / sign in at <https://pypi.org>.
-3. PyPI → *Your projects* → *Publishing* → **Add a new pending publisher**:
-   - PyPI project name: `draftwatch` (confirmed free 2026-07-02)
-   - Owner: `<github-owner>`
-   - Repository: `<repo-name>`
+1. ~~Move draftwatch to its own repository~~ Done: `mtkonczal/Draftwatch`.
+2. Create an account / sign in at <https://pypi.org>. Verify the email address
+   and enable 2FA (PyPI requires it before you can manage publishing).
+3. PyPI → *Your projects* → *Publishing* → **Add a new pending publisher**
+   (under "GitHub"):
+   - PyPI project name: `draftwatch` (confirmed free 2026-07-02 and 2026-07-04)
+   - Owner: `mtkonczal`
+   - Repository: `Draftwatch`
    - Workflow name: `publish.yml`
    - Environment: `pypi`
 4. GitHub repo → *Settings* → *Environments* → create an environment named

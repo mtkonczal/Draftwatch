@@ -3,6 +3,33 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## Unreleased
+
+- ⌘/Ctrl-S saves to file from anywhere — source view, editable preview, or the
+  diff panel — suppressing the browser's own save dialog.
+- New files: "+ start a new file…" at the top of the file dropdown switches to
+  a blank, unnamed scratch buffer (the previously open file stays untouched on
+  disk); starting draftwatch with no target gives the same buffer. Write
+  first, name later: only saving (button or ⌘S) prompts for a name and creates
+  the file via a new `/api/new` endpoint (subdirectories allowed, existing
+  files refused, empty buffer fine), then starts watching it; the usual
+  start-tracking flow follows. Detaching goes through a new `/api/close`. The
+  empty-editor placeholder and status line say so.
+- Header reorganized to two rows: file and baseline share the top row half
+  each; the second row has preview / format / save on the left and theme /
+  color / about on the right, with transient status in between.
+- Per-hunk revert buttons are now a bare `✗` (state shown by highlight +
+  tooltip); the diff panel header carries a matching "click ✗ to revert a
+  change" hint, set in the same header type. Heavily edited lines stay
+  readable.
+- Color themes: blue (default), teal, iris, plum, graphite. Each restyles the
+  whole surface — paper, panels, borders, ink, accent — the way blue does, in
+  the same muted editorial register; graphite is the monochrome (Cursor-style)
+  one. Each has a dark-mode variant, remembered in localStorage and applied
+  before first paint, like the light/dark toggle.
+- File creation lives on `/api/new`; `/api/save` refuses a `path` (no silent
+  save-as).
+
 ## 0.1.0 — 2026-07-02
 
 Initial release. Draftwatch watches a writing file in a git repo and shows an AI
