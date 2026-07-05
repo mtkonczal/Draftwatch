@@ -1,6 +1,6 @@
 # Draftwatch
 
-Review an AI agent's edits to your writing the way you'd review a pull request. Draftwatch shows the exact, git-backed word-diff of what changed in a file, lets you keep or revert each change, and commits when you're done.
+Draftwatch is a lightweight IDE for writers that all them to review an AI agent's edits to their writing the way you'd review a pull request. Draftwatch shows the exact, git-backed word-diff of what changed in a file, lets you keep or revert each change, and commits when you're done.
 
 The diff comes from git on your machine, not from the AI vendor and not from a JavaScript approximation. You get independent verification of what the agent actually did.
 
