@@ -5,6 +5,13 @@ All notable changes to draftwatch are recorded here. Versions are git tags
 
 ## Unreleased
 
+- Removed the `--host` flag: Draftwatch now always binds `127.0.0.1` and is
+  never exposed on the network. The bind interface was configurable before
+  anyone used it; locking it to loopback simplifies the security model ahead
+  of the embedded terminal panel, where it becomes load-bearing.
+
+## 0.1.1 — 2026-07-05
+
 - Second instance no longer fails on a busy port. When `--port` is omitted,
   Draftwatch tries the default (8787) and, if it's taken (e.g. another instance
   is already running), automatically falls back to the next free port and

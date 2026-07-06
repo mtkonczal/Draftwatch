@@ -53,14 +53,13 @@ Start without a file (`draftwatch`) to pick one in the window.
 ### Options
 
 ```
-draftwatch [target] [--port 8787] [--host 127.0.0.1] [--no-open] [--app | --no-app]
+draftwatch [target] [--port 8787] [--no-open] [--app | --no-app]
 ```
 
 - `target`: file to watch. Optional; omit it to pick one in the UI.
 - `--port`: default `8787`. If omitted and the default is busy, Draftwatch
   picks a free port automatically; pass `--port` to pin an exact one (it then
   fails loudly if that port is taken).
-- `--host`: default `127.0.0.1`. Changing this exposes the tool on your network and is not recommended.
 - `--no-open`: don't auto-open a window (useful headless or over SSH).
 - `--app` / `--no-app`: force or disable the native window. It is on by default when pywebview is installed and falls back to the browser otherwise.
 
@@ -75,7 +74,7 @@ draftwatch [target] [--port 8787] [--host 127.0.0.1] [--no-open] [--app | --no-a
 
 ## Security
 
-Draftwatch binds `127.0.0.1` only. Every request carries a per-session token, the Host and Origin headers are validated to defeat DNS-rebinding, and the markdown preview is sanitized with DOMPurify before rendering. The tool never talks to any LLM. Don't change `--host` unless you understand the exposure.
+Draftwatch binds `127.0.0.1` only — there is deliberately no option to bind another interface, so the tool is never exposed on your network. Every request carries a per-session token, the Host and Origin headers are validated to defeat DNS-rebinding, and the markdown preview is sanitized with DOMPurify before rendering. The tool never talks to any LLM.
 
 ## Tests
 

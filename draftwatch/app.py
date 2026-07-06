@@ -3194,8 +3194,13 @@ def fail(msg, code=2):
     sys.exit(code)
 
 
-def bind_http_server(host, port, handler, explicit_port):
+def bind_http_server(port, handler, explicit_port):
     """Create the HTTP server, returning a bound ThreadingHTTPServer.
+
+    Always binds loopback (127.0.0.1): Draftwatch is a local, single-user tool
+    and is never exposed on the network — there is deliberately no --host
+    option (the security model, and the embedded terminal especially, depend
+    on it).
 
     With an explicit --port, bind exactly that port (the caller reports a clean
     error if it is busy). Otherwise treat `port` as the *preferred* default:
@@ -3204,6 +3209,7 @@ def bind_http_server(host, port, handler, explicit_port):
     back to an OS-assigned free port (port 0). The real port is read from the
     bound socket afterward, so callers must not assume `port`.
     """
+    host = "127.0.0.1"
     if explicit_port:
         # honor the user's choice; let EADDRINUSE propagate to the caller
         return ThreadingHTTPServer((host, port), handler)
@@ -3272,11 +3278,6 @@ def main(argv=None):
              "free port automatically. Pass --port to pin an exact one."
              .format(DEFAULT_PORT))
     parser.add_argument(
-        "--host", default="127.0.0.1",
-        help="bind host (default 127.0.0.1). WARNING: changing this exposes the tool "
-             "on your network and is not recommended.",
-    )
-    parser.add_argument(
         "--no-open", action="store_true",
         help="do not auto-open the browser on startup (it opens by default).",
     )
@@ -3342,13 +3343,13 @@ def main(argv=None):
     explicit_port = args.port is not None
     preferred_port = args.port if explicit_port else DEFAULT_PORT
     try:
-        httpd = bind_http_server(args.host, preferred_port, Handler, explicit_port)
+        httpd = bind_http_server(preferred_port, Handler, explicit_port)
     except OSError as e:
         if e.errno == errno.EADDRINUSE:
-            fail("could not bind %s:%d (%s). Another Draftwatch is likely running; "
-                 "omit --port to let it pick a free port automatically."
-                 % (args.host, preferred_port, e), code=1)
-        fail("could not bind %s:%d (%s)" % (args.host, preferred_port, e), code=1)
+            fail("could not bind 127.0.0.1:%d (%s). Another Draftwatch is likely "
+                 "running; omit --port to let it pick a free port automatically."
+                 % (preferred_port, e), code=1)
+        fail("could not bind 127.0.0.1:%d (%s)" % (preferred_port, e), code=1)
     httpd.daemon_threads = True
     # Bind may have landed on a different port than requested (auto-fallback).
     # Everything downstream — the opened URL and the Host allowlist — must use
@@ -3356,14 +3357,11 @@ def main(argv=None):
     # server rejected its requests as a bad Host.
     bound_port = httpd.server_address[1]
     Handler.allowed_hosts = {"127.0.0.1:%d" % bound_port, "localhost:%d" % bound_port}
-    if args.host not in ("127.0.0.1", "localhost", "0.0.0.0"):
-        Handler.allowed_hosts.add("%s:%d" % (args.host, bound_port))
 
     stop_event = threading.Event()
     watcher = threading.Thread(target=watch_loop, args=(state, stop_event), daemon=True)
     watcher.start()
 
-    # a browser cannot navigate to 0.0.0.0; always send it to loopback.
     # The token rides in the URL so the page can authenticate its requests.
     open_url = "http://127.0.0.1:{}/?t={}".format(bound_port, token)
 
@@ -3385,8 +3383,6 @@ def main(argv=None):
     print(init_note)
     if not explicit_port and bound_port != DEFAULT_PORT:
         print("port {} was busy — using {} instead".format(DEFAULT_PORT, bound_port))
-    if args.host != "127.0.0.1":
-        print("WARNING: bound to {} — the tool is exposed on your network.".format(args.host))
     print("open {}   (ctrl-c to stop)".format(open_url), flush=True)
     if want_app:
         print("mode: native window — close the window to stop", flush=True)
