@@ -3,8 +3,29 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
-## Unreleased
+## 0.2.0 — 2026-07-06
 
+- Arming commit now gives the message box the footer's full width: the review
+  controls (navigation arrows, changes-only, revert/keep all, apply) hide while
+  the commit message is open — you've finished picking by then — and Esc brings
+  them back. Prevents the commit button being pushed out of view in a narrow
+  panel with the terminal open.
+- **Resizable panels**: drag the dividers between panels to change the split;
+  double-click a divider to reset. Splits last for the current session only —
+  every launch starts at the default layout.
+- **Embedded terminal panel** (macOS/Linux): a third, closable panel running a
+  real shell in the repo, so an agent (Claude Code, Codex, anything) can work
+  right next to the live diff. A toolbar button opens it; **hide** collapses
+  the panel while the shell keeps running; **end session** kills the shell's
+  whole process group. Output survives page reloads via scrollback replay over
+  SSE. No snapshots are taken when commands run — edits accumulate against the
+  selected baseline as usual. Security: same Host/Origin/token guards as every
+  route, but the terminal's input routes accept the token only as a header
+  (keystrokes never ride in URLs); input bytes are piped to the PTY, never
+  parsed; `--no-terminal` removes the routes from the server entirely; and no
+  shell outlives Draftwatch. On Windows (no pty) the feature is absent and
+  Draftwatch behaves exactly as before. xterm.js and its fit addon are vendored
+  like the other frontend libraries — local, offline, audited.
 - Removed the `--host` flag: Draftwatch now always binds `127.0.0.1` and is
   never exposed on the network. The bind interface was configurable before
   anyone used it; locking it to loopback simplifies the security model ahead

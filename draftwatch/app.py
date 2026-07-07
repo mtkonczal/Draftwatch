@@ -9,6 +9,7 @@ The diff is always real `git diff --word-diff`, never a JS/Python approximation.
 """
 
 import argparse
+import atexit
 import errno
 import hashlib
 import html
@@ -24,11 +25,23 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
+# Embedded terminal (see TERMINAL_PLAN.md). POSIX only: on Windows the pty
+# module doesn't exist, the import fails, and Draftwatch runs exactly as it
+# did without the feature — same codebase, graceful degradation, no fork.
+try:
+    from . import term as _term
+except ImportError:
+    try:
+        import term as _term            # running app.py outside the package
+    except ImportError:
+        _term = None
+TERM_SUPPORTED = _term is not None
+
 # Single source of truth for the version and the date of the latest release.
 # __init__.py re-exports __version__; the About panel shows both (injected into
 # the served page from these constants).
-__version__ = "0.1.1"
-RELEASE_DATE = "2026-07-05"
+__version__ = "0.2.0"
+RELEASE_DATE = "2026-07-06"
 
 # Preferred port. When --port is not given, Draftwatch tries this first and
 # falls back to a free port if it is busy (so a second instance can start while
@@ -760,6 +773,8 @@ def watch_loop(state, stop_event):
 # filesystem path; anything not literally in this dict is a 404.
 STATIC_ASSETS = {
     "codemirror.js": "application/javascript; charset=utf-8",
+    "xterm.js": "application/javascript; charset=utf-8",
+    "xterm.css": "text/css; charset=utf-8",
     "marked.js": "application/javascript; charset=utf-8",
     "purify.js": "application/javascript; charset=utf-8",
     "turndown.js": "application/javascript; charset=utf-8",
@@ -789,6 +804,8 @@ class Handler(BaseHTTPRequestHandler):
     state = None            # set on the class before serving
     token = None            # per-session secret; required on /api/* and /events
     allowed_hosts = set()   # exact Host header values we will serve
+    term_enabled = False    # POSIX + not --no-terminal (set in main)
+    term_session = None     # the one TermSession, or None when disabled
 
     # quiet default logging
     def log_message(self, fmt, *args):
@@ -819,11 +836,17 @@ class Handler(BaseHTTPRequestHandler):
             if origin not in {"http://" + h for h in self.allowed_hosts}:
                 self._send(403, json.dumps({"error": "forbidden: bad Origin"}))
                 return False
-        if path.startswith("/api/") or path == "/events":
+        if path.startswith("/api/") or path in ("/events", "/term/events"):
             tok = self.headers.get("X-Draftwatch-Token")
             if not tok:
-                vals = self._query().get("t")
-                tok = vals[0] if vals else ""
+                # Query-string fallback exists only for EventSource, which
+                # cannot set headers. The terminal POST routes are header-only:
+                # keystrokes must never ride in URLs (history, logs, referrers).
+                if path.startswith("/api/term/"):
+                    tok = ""
+                else:
+                    vals = self._query().get("t")
+                    tok = vals[0] if vals else ""
             if not (self.token and secrets.compare_digest(tok, self.token)):
                 self._send(403, json.dumps({"error": "forbidden: missing or bad session token"}))
                 return False
@@ -865,12 +888,15 @@ class Handler(BaseHTTPRequestHandler):
             # inject version/date (literal tokens, so no clash with CSS/JS braces)
             page = (INDEX_HTML
                     .replace("{{VERSION}}", __version__)
-                    .replace("{{RELEASE_DATE}}", RELEASE_DATE))
+                    .replace("{{RELEASE_DATE}}", RELEASE_DATE)
+                    .replace("{{TERM}}", "1" if self.term_enabled else "0"))
             self._send(200, page, "text/html; charset=utf-8")
         elif path.startswith("/static/"):
             self._serve_static(path[len("/static/"):])
         elif path == "/events":
             self._serve_events()
+        elif path == "/term/events":
+            self._serve_term_events()
         elif path == "/api/baselines":
             self._api_baselines()
         elif path == "/api/files":
@@ -990,8 +1016,87 @@ class Handler(BaseHTTPRequestHandler):
             self._api_close()
         elif path == "/api/init-repo":
             self._api_init_repo()
+        elif path == "/api/term/open":
+            self._api_term_open()
+        elif path == "/api/term/input":
+            self._api_term_input()
+        elif path == "/api/term/resize":
+            self._api_term_resize()
+        elif path == "/api/term/close":
+            self._api_term_close()
         else:
             self._send(404, "not found", "text/plain")
+
+    # ---- terminal panel ----
+    # All routes 404 when the feature is off (--no-terminal, or Windows where
+    # the pty module doesn't exist) — disabled means absent, not forbidden.
+    # _guard has already enforced Host, Origin, and the header-only token.
+
+    def _term_ok(self):
+        if not self.term_enabled or self.term_session is None:
+            self._send(404, "not found", "text/plain")
+            return False
+        return True
+
+    def _api_term_open(self):
+        if not self._term_ok():
+            return
+        body = self._read_json()
+        sess = self.term_session
+        started = sess.start(body.get("cols", 80), body.get("rows", 24))
+        self._json({"ok": True, "started": started,
+                    "running": sess.running(), "pid": sess.pid()})
+
+    def _api_term_input(self):
+        if not self._term_ok():
+            return
+        data = self._read_json().get("data")
+        if not isinstance(data, str) or data == "":
+            return self._json({"error": "no input"}, 400)
+        ok = self.term_session.write(data.encode("utf-8", "replace"))
+        self._json({"ok": ok} if ok else {"error": "terminal not running"},
+                   200 if ok else 409)
+
+    def _api_term_resize(self):
+        if not self._term_ok():
+            return
+        body = self._read_json()
+        try:
+            cols, rows = int(body.get("cols")), int(body.get("rows"))
+        except (TypeError, ValueError):
+            return self._json({"error": "cols/rows must be integers"}, 400)
+        self._json({"ok": self.term_session.resize(cols, rows)})
+
+    def _api_term_close(self):
+        if not self._term_ok():
+            return
+        self.term_session.terminate()
+        self._json({"ok": True, "running": self.term_session.running()})
+
+    def _serve_term_events(self):
+        if not self._term_ok():
+            return
+        sess = self.term_session
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        q, hello = sess.subscribe()
+        try:
+            # scrollback replay first, so a reconnecting page repaints instantly
+            self._sse_write(json.dumps(hello))
+            while True:
+                try:
+                    self._sse_write(json.dumps(q.get(timeout=15)))
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            sess.unsubscribe(q)
 
     def _api_init_repo(self):
         """Turn the write-only root into a git repository (`git init`), then
@@ -1253,6 +1358,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <script src="/static/marked.js"></script>
 <script src="/static/purify.js"></script>
 <script src="/static/turndown.js"></script>
+<script src="/static/xterm.js"></script>
+<link rel="stylesheet" href="/static/xterm.css">
 <script>
   // Resolve the saved theme + accent before first paint so there is no
   // light/dark (or color) flash. "auto" (or nothing saved) leaves the theme to
@@ -1508,11 +1615,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
   main {
     flex: 1;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 6px 1fr;
     min-height: 0;
   }
   .panel { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   .panel.left { border-right: 1px solid var(--border); }
+
+  /* gutters: slim grid tracks between panels, draggable to resize (widths
+     persist per two-/three-panel layout; double-click resets). */
+  .gutter { cursor: col-resize; background: transparent; }
+  .gutter:hover, .gutter.dragging { background: var(--accent); opacity: .35; }
+  body.dragging-cols { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+
+  /* terminal panel: a third column that exists only while open. Hiding it
+     (body class removed) keeps the shell running server-side. */
+  .panel.term, .gutter.term-gutter { display: none; }
+  .panel.term { border-left: 1px solid var(--border); }
+  body.term-open main { grid-template-columns: 1fr 6px 1fr 6px minmax(280px, 0.8fr); }
+  body.term-open .panel.term { display: flex; }
+  body.term-open .gutter.term-gutter { display: block; }
+  .panel.term h2 { display: flex; align-items: center; gap: 8px; }
+  .panel.term h2 .spacer { flex: 1; }
+  .panel.term h2 button {
+    text-transform: none; letter-spacing: normal; font-weight: 400;
+  }
+  #term-host { flex: 1; min-height: 0; padding: 6px 2px 2px 8px; }
+  #term-host .terminal { height: 100%; }
   .panel h2 {
     margin: 0;
     padding: 6px 12px;
@@ -1684,6 +1812,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   footer input[type="text"]:focus { outline: none; border-color: var(--accent); }
   #commit-btn { color: var(--add-fg); border-color: var(--add-fg); font-weight: 700; }
   #commit-btn.armed { background: var(--add-bg); }
+  /* armed commit is a mode: the review controls have done their job, so they
+     step aside and the message box gets the whole footer — otherwise a narrow
+     panel (terminal open) pushes the commit button out of reach. Esc restores. */
+  body.commit-armed #counts,
+  body.commit-armed #nav,
+  body.commit-armed .chgonly,
+  body.commit-armed #revert-all,
+  body.commit-armed #keep-all,
+  body.commit-armed #apply,
+  body.commit-armed footer .spacer { display: none !important; }
+  body.commit-armed #commit-msg { flex: 1 1 auto; max-width: none; }
   .hidden { display: none !important; }
   h2.unsaved { color: var(--del-fg); }
   button.attn { box-shadow: 0 0 0 2px var(--warn-border); }
@@ -1823,6 +1962,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </span>
     <button id="save" class="apply" title="write the buffer to disk (⌘/Ctrl-S)">save to file</button>
     <span class="status" id="status">connecting&hellip;</span>
+    <button id="term-toggle" class="hidden" title="terminal panel — run your agent (or any shell command) next to the diff; hiding the panel keeps the shell running">terminal</button>
     <button id="theme-toggle" title="theme: auto / light / dark">theme: auto</button>
     <button id="accent-toggle" title="accent color — click to cycle"><span class="swatch"></span><span id="accent-name">blue</span></button>
     <button id="about-btn" title="what is Draftwatch?">about</button>
@@ -1851,11 +1991,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       rest, reverting the marked spans. <strong>Commit</strong> records the file
       to git; the baseline advances to that commit, the diff clears to zero, and
       the next agent pass starts clean.</p>
-    <h3>Two panels</h3>
+    <h3>The panels</h3>
     <p>Left is your working text: edit the markdown source directly, or switch to
       the rendered <strong>Preview</strong>, which is also editable. Right is the
       diff against the baseline — added words in green, removed words struck in
-      red — with a change map, next/previous navigation, and a changes-only view.</p>
+      red — with a change map, next/previous navigation, and a changes-only view.
+      The <strong>terminal</strong> button opens a third panel with a real shell
+      (macOS/Linux) — run your agent there and watch its edits land in the diff;
+      hiding the panel keeps the shell running.</p>
     <h3>Editing in Preview</h3>
     <p>Typing in the rendered Preview rewrites the markdown source in a normalized
       style, so heading, emphasis, and spacing conventions can shift. When you
@@ -1878,6 +2021,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div id="editor-host"></div>
     <div id="preview" class="scroll hidden"></div>
   </section>
+  <div class="gutter" id="gutter-1" title="drag to resize — double-click to reset"></div>
   <section class="panel right">
     <h2 class="diffhead"><span>diff vs baseline</span><span class="diffhint">click <span class="xdemo">✗</span> to revert a change</span></h2>
     <div class="right-body">
@@ -1901,6 +2045,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <input type="text" id="commit-msg" class="hidden" placeholder="commit message (optional) — Enter to commit, Esc to cancel">
       <button id="commit-btn" title="git commit this version — the diff clears and future edits show against it">commit</button>
     </footer>
+  </section>
+  <div class="gutter term-gutter" id="gutter-2" title="drag to resize — double-click to reset"></div>
+  <section class="panel term">
+    <h2><span>terminal</span><span class="spacer"></span><button id="term-hide" title="hide the panel — the shell keeps running">hide</button><button id="term-end" title="end the shell session — running programs are killed">end session</button></h2>
+    <div id="term-host"></div>
   </section>
 </main>
 
@@ -2527,6 +2676,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   var commitArmed = false;
   function armCommit() {
     commitArmed = true;
+    document.body.classList.add("commit-armed");   // review controls step aside
     $("commit-msg").classList.remove("hidden");
     $("commit-btn").classList.add("armed");
     $("commit-msg").focus();
@@ -2534,6 +2684,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   function disarmCommit() {
     commitArmed = false;
+    document.body.classList.remove("commit-armed");
     $("commit-msg").classList.add("hidden");
     $("commit-msg").value = "";
     $("commit-btn").classList.remove("armed");
@@ -3170,6 +3321,211 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (e.key === "Escape" && $("about").classList.contains("show")) showAbout(false);
   });
 
+  // ---- resizable panels ----
+  // The gutters between panels are real grid tracks; dragging one moves width
+  // between its two neighbors (as fr fractions, so window resizes scale
+  // proportionally). The two- and three-panel layouts each hold their own
+  // split for this page load only — deliberately not persisted; every session
+  // starts at the defaults. Double-click a gutter to reset.
+  var GUTTER_PX = 6;
+  var COL_MIN = 200;            // px floor for a panel mid-drag
+  var colFr = { two: [1, 1], three: [1, 1, 0.8] };
+
+  function colPanels() {
+    var els = [document.querySelector(".panel.left"),
+               document.querySelector(".panel.right")];
+    if (document.body.classList.contains("term-open"))
+      els.push(document.querySelector(".panel.term"));
+    return els;
+  }
+
+  function applyCols() {
+    // inline style overrides the CSS defaults, so this must run on every
+    // layout switch (terminal open/hide), not just after drags
+    var open = document.body.classList.contains("term-open");
+    var fr = open ? colFr.three : colFr.two;
+    var parts = [];
+    for (var i = 0; i < fr.length; i++) {
+      var track = fr[i].toFixed(4) + "fr";
+      if (open && i === fr.length - 1) track = "minmax(240px, " + track + ")";
+      parts.push(track);
+    }
+    document.querySelector("main").style.gridTemplateColumns =
+      parts.join(" " + GUTTER_PX + "px ");
+  }
+
+  function initGutter(id, idx) {
+    var g = $(id);
+    g.addEventListener("dblclick", function () {
+      colFr = { two: [1, 1], three: [1, 1, 0.8] };
+      applyCols(); termFitSoon();
+    });
+    g.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      var panels = colPanels();
+      if (idx + 1 >= panels.length) return;
+      var widths = [], total = 0, i;
+      for (i = 0; i < panels.length; i++) widths.push(panels[i].offsetWidth);
+      total = widths[idx] + widths[idx + 1];
+      if (total <= 0) return;              // no layout yet — nothing to drag
+      var startX = e.clientX;
+      var mode = panels.length === 3 ? "three" : "two";
+      g.classList.add("dragging");
+      document.body.classList.add("dragging-cols");
+      function move(ev) {
+        var w = widths.slice();
+        w[idx] = Math.max(COL_MIN, Math.min(widths[idx] + (ev.clientX - startX),
+                                            total - COL_MIN));
+        w[idx + 1] = total - w[idx];
+        var sum = 0, fr = [];
+        for (var j = 0; j < w.length; j++) sum += w[j];
+        for (var k = 0; k < w.length; k++) fr.push(w[k] / sum * w.length);
+        colFr[mode] = fr;
+        applyCols();
+      }
+      function up() {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        g.classList.remove("dragging");
+        document.body.classList.remove("dragging-cols");
+        termFitSoon();                     // xterm re-measures its new width
+      }
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+  }
+  initGutter("gutter-1", 0);
+  initGutter("gutter-2", 1);
+  applyCols();
+
+  // ---- terminal panel ----
+  // {{TERM}} is injected server-side: "0" when --no-terminal was passed or the
+  // platform has no pty (Windows). Disabled means the routes don't exist, so
+  // the button never renders and nothing here runs.
+  var TERM_ENABLED = "{{TERM}}" === "1" && typeof XTerm !== "undefined";
+  var term = null;              // xterm.js Terminal (created on first open)
+  var termFit = null;           // fit addon
+  var termES = null;            // /term/events EventSource
+  var termExited = false;       // shell gone; "end session" becomes "restart"
+
+  function b64ToBytes(b64) {
+    var bin = atob(b64), arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+  }
+
+  function termTheme() {
+    // xterm needs concrete colors, not CSS vars; sample the app's theme once.
+    var cs = getComputedStyle(document.body);
+    return {
+      background: (cs.getPropertyValue("--bg") || "").trim() || "#1e1e1e",
+      foreground: (cs.getPropertyValue("--text") || "").trim() || "#dddddd",
+      cursor: (cs.getPropertyValue("--accent") || "").trim() || "#6699ff",
+      selectionBackground: "rgba(128,128,128,0.35)"
+    };
+  }
+
+  function termButtons() {
+    $("term-end").textContent = termExited ? "restart" : "end session";
+  }
+
+  function termFitSoon() {
+    // fit after layout settles; xterm's resize event then informs the server
+    requestAnimationFrame(function () {
+      if (termFit && document.body.classList.contains("term-open")) {
+        try { termFit.fit(); } catch (e) {}
+      }
+    });
+  }
+
+  function connectTermES() {
+    if (termES) termES.close();
+    // EventSource cannot set headers; the token rides in the query string here
+    // (read-only output stream) — never on the input routes, which are
+    // header-only server-side.
+    termES = new EventSource("/term/events?t=" + encodeURIComponent(TOKEN));
+    termES.onmessage = function (ev) {
+      var p;
+      try { p = JSON.parse(ev.data); } catch (e) { return; }
+      if (p.type === "hello") {
+        // (re)connect: repaint from scrollback so reloads lose nothing
+        term.reset();
+        if (p.data) term.write(b64ToBytes(p.data));
+        termExited = !p.running;
+        termButtons();
+      } else if (p.type === "out") {
+        term.write(b64ToBytes(p.data));
+      } else if (p.type === "exit") {
+        termExited = true;
+        termButtons();
+        term.write("\r\n\x1b[2m[shell exited" +
+                   (p.code !== null && p.code !== undefined ? " (" + p.code + ")" : "") +
+                   " — restart from the panel header]\x1b[0m\r\n");
+      }
+    };
+  }
+
+  function termStart() {
+    postJSON("/api/term/open", { cols: term.cols, rows: term.rows }, function (res) {
+      if (res.error) { setStatus("terminal: " + res.error); return; }
+      termExited = !res.running;
+      termButtons();
+      if (res.started && termES) term.reset();   // fresh shell, fresh screen
+      if (!termES) connectTermES();
+      term.focus();
+    });
+  }
+
+  function initTerm() {
+    term = new XTerm.Terminal({
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontSize: 13,
+      cursorBlink: true,
+      scrollback: 4000,
+      theme: termTheme()
+    });
+    termFit = new XTerm.FitAddon();
+    term.loadAddon(termFit);
+    term.open($("term-host"));
+    try { termFit.fit(); } catch (e) {}
+    // raw keystrokes -> PTY; the server never parses them (and the token goes
+    // in a header, so input never appears in a URL)
+    term.onData(function (d) { postJSON("/api/term/input", { data: d }); });
+    term.onResize(function (sz) {
+      postJSON("/api/term/resize", { cols: sz.cols, rows: sz.rows });
+    });
+    termStart();
+  }
+
+  function openTermPanel() {
+    document.body.classList.add("term-open");
+    applyCols();                                   // three-panel split
+    if (!term) initTerm();
+    else { termFitSoon(); if (termExited) termStart(); else term.focus(); }
+  }
+  function hideTermPanel() {
+    document.body.classList.remove("term-open");   // shell keeps running
+    applyCols();                                   // back to the two-panel split
+  }
+
+  if (TERM_ENABLED) {
+    $("term-toggle").classList.remove("hidden");
+    $("term-toggle").addEventListener("click", function () {
+      if (document.body.classList.contains("term-open")) hideTermPanel();
+      else openTermPanel();
+    });
+    $("term-hide").addEventListener("click", hideTermPanel);
+    $("term-end").addEventListener("click", function () {
+      if (termExited) { termStart(); return; }
+      if (!window.confirm("End the shell session? Running programs will be killed.")) return;
+      postJSON("/api/term/close", {}, function () {
+        termExited = true;
+        termButtons();
+      });
+    });
+    window.addEventListener("resize", termFitSoon);
+  }
+
   // ---- init ----
   loadFiles();
   loadBaselines();
@@ -3282,6 +3638,11 @@ def main(argv=None):
         help="do not auto-open the browser on startup (it opens by default).",
     )
     parser.add_argument(
+        "--no-terminal", action="store_true",
+        help="disable the embedded terminal panel entirely (its routes are "
+             "absent from the server, not just hidden in the UI).",
+    )
+    parser.add_argument(
         "--app", action="store_true",
         help="force the native window (the default when pywebview is installed). "
              "Needs pywebview (pip install 'draftwatch[app]'); falls back to the "
@@ -3340,6 +3701,14 @@ def main(argv=None):
     token = secrets.token_urlsafe(32)
     Handler.state = state
     Handler.token = token
+    # Embedded terminal: on when the platform supports it and the user didn't
+    # opt out. The session is created lazily-ish here but the shell is only
+    # spawned when the panel is first opened. atexit covers every exit path
+    # (ctrl-c, window close, normal return) so no shell outlives Draftwatch.
+    Handler.term_enabled = TERM_SUPPORTED and not args.no_terminal
+    if Handler.term_enabled:
+        Handler.term_session = _term.TermSession(root)
+        atexit.register(Handler.term_session.terminate)
     explicit_port = args.port is not None
     preferred_port = args.port if explicit_port else DEFAULT_PORT
     try:

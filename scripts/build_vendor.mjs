@@ -45,6 +45,26 @@ copyFileSync(join(root, "node_modules", "dompurify", "dist", "purify.min.js"),
 copyFileSync(join(root, "node_modules", "turndown", "dist", "turndown.js"),
              join(assets, "turndown.js"));
 
+// ---- xterm.js + fit addon: one IIFE exposing an `XTerm` global --------------
+// Powers the embedded terminal panel. The CSS ships alongside (xterm needs its
+// stylesheet for layout/selection/cursor rendering).
+const xtermEntry = `
+export { Terminal } from "@xterm/xterm";
+export { FitAddon } from "@xterm/addon-fit";
+`;
+
+await esbuild.build({
+  stdin: { contents: xtermEntry, resolveDir: root, loader: "js" },
+  bundle: true,
+  minify: true,
+  format: "iife",
+  globalName: "XTerm",
+  outfile: join(assets, "xterm.js"),
+  logLevel: "info",
+});
+copyFileSync(join(root, "node_modules", "@xterm", "xterm", "css", "xterm.css"),
+             join(assets, "xterm.css"));
+
 // ---- license roll-up --------------------------------------------------------
 const lic = (pkg, file = "LICENSE") =>
   readFileSync(join(root, "node_modules", pkg, file), "utf8");
@@ -62,6 +82,8 @@ for (const pkg of [
 ]) {
   add(`${pkg} ${pkgVersion(pkg)} (MIT)`, lic(pkg));
 }
+add(`@xterm/xterm ${pkgVersion("@xterm/xterm")} (MIT)`, lic("@xterm/xterm"));
+add(`@xterm/addon-fit ${pkgVersion("@xterm/addon-fit")} (MIT)`, lic("@xterm/addon-fit"));
 add(`marked ${pkgVersion("marked")} (MIT)`, lic("marked", "LICENSE.md"));
 add(`dompurify ${pkgVersion("dompurify")} (Apache-2.0 OR MPL-2.0)`, lic("dompurify"));
 add(`turndown ${pkgVersion("turndown")} (MIT)`, lic("turndown"));
@@ -73,4 +95,4 @@ writeFileSync(
   licenses.join("\n"),
 );
 
-console.log("vendor build complete: draftwatch/assets/{codemirror,marked,purify,turndown}.js + THIRD_PARTY_LICENSES");
+console.log("vendor build complete: draftwatch/assets/{codemirror,marked,purify,turndown,xterm}.js + xterm.css + THIRD_PARTY_LICENSES");

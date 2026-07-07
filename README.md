@@ -6,7 +6,7 @@ When reviewing AI edits, instead of guessing what an LLM changed in your documen
 
 Crucially, the diff comes from your local git—not from the AI vendor and not from a JavaScript approximation. You get absolute, independent verification of what the agent or script actually did.
 
-Python 3.9+ and git are the only requirements. The front-end libraries (CodeMirror 6, marked, DOMPurify, Turndown) are vendored and served locally, so Draftwatch works completely offline and binds to localhost only.
+Python 3.9+ and git are the only requirements. The front-end libraries (CodeMirror 6, marked, DOMPurify, Turndown, xterm.js) are vendored and served locally, so Draftwatch works completely offline and binds to localhost only.
 
 ## Install
 
@@ -53,7 +53,7 @@ Start without a file (`draftwatch`) to pick one in the window.
 ### Options
 
 ```
-draftwatch [target] [--port 8787] [--no-open] [--app | --no-app]
+draftwatch [target] [--port 8787] [--no-open] [--no-terminal] [--app | --no-app]
 ```
 
 - `target`: file to watch. Optional; omit it to pick one in the UI.
@@ -61,7 +61,12 @@ draftwatch [target] [--port 8787] [--no-open] [--app | --no-app]
   picks a free port automatically; pass `--port` to pin an exact one (it then
   fails loudly if that port is taken).
 - `--no-open`: don't auto-open a window (useful headless or over SSH).
+- `--no-terminal`: disable the embedded terminal panel entirely (its routes are removed from the server, not just hidden in the UI).
 - `--app` / `--no-app`: force or disable the native window. It is on by default when pywebview is installed and falls back to the browser otherwise.
+
+## The terminal panel
+
+Click **terminal** in the toolbar to open a third panel running a real shell in your repo (macOS/Linux). Launch `claude`, `codex`, or any command there: when the agent edits the file you're watching, the diff panel lights up live — prompt on the right, review in the middle, write on the left. **hide** collapses the panel and leaves the shell running (an agent mid-task keeps working); **end session** kills the shell and everything it started. No snapshots are taken when you run commands — edits accumulate against whatever baseline you've selected, and you review them on your schedule. On Windows the panel is unavailable and Draftwatch simply runs without it.
 
 ## Features
 
@@ -71,10 +76,14 @@ draftwatch [target] [--port 8787] [--no-open] [--app | --no-app]
 - Jump between changes or collapse to a changes-only view for long documents.
 - Editable markdown preview alongside the raw source.
 - You and the agent can both edit; your unsaved work is never clobbered when the file changes on disk.
+- Embedded terminal panel (macOS/Linux): run your agent next to the diff without leaving the window.
+- Resizable panels: drag the dividers to change the split (double-click to reset).
 
 ## Security
 
 Draftwatch binds `127.0.0.1` only — there is deliberately no option to bind another interface, so the tool is never exposed on your network. Every request carries a per-session token, the Host and Origin headers are validated to defeat DNS-rebinding, and the markdown preview is sanitized with DOMPurify before rendering. The tool never talks to any LLM.
+
+The terminal panel is a real shell, so it gets extra care: its input routes accept the session token **only** as a request header (keystrokes never appear in URLs, browser history, or logs), the server pipes bytes to the PTY without ever parsing them, ending a session kills the shell's whole process group, and no shell outlives Draftwatch. `--no-terminal` removes the feature from the server entirely.
 
 ## Tests
 

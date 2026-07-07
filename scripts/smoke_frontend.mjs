@@ -146,6 +146,12 @@ try {
   commitBtn.click();   // arm
   must(!commitMsg.classList.contains("hidden"), "commit message box shown after first click");
   must(commitBtn.classList.contains("armed"), "commit button armed after first click");
+  // arming is a mode: the body class hides the review controls so the message
+  // box gets the footer's full width; Esc restores everything
+  must(w.document.body.classList.contains("commit-armed"), "commit-armed class set on arm");
+  commitMsg.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", cancelable: true, bubbles: true }));
+  must(!w.document.body.classList.contains("commit-armed"), "Esc disarms: commit-armed class removed");
+  must(commitMsg.classList.contains("hidden"), "Esc disarms: message box hidden again");
 
   // about modal opens and closes
   const about = w.document.getElementById("about");
@@ -187,8 +193,81 @@ try {
   must(pvKey("e").defaultPrevented, "Cmd-E handled in preview");
   must(pv2.querySelector("code"), "Cmd-E wraps selection in <code>");
   must(pvKey("k").defaultPrevented, "Cmd-K handled in preview");
+
+  // resizable panels: gutters exist, the JS-managed grid template is applied,
+  // and a double-click reset doesn't throw (drag itself needs real layout,
+  // which jsdom doesn't do — covered by the no-op guard).
+  must(w.document.getElementById("gutter-1") && w.document.getElementById("gutter-2"),
+       "panel gutters present");
+  const mainCols = w.document.querySelector("main").style.gridTemplateColumns;
+  must(/fr/.test(mainCols), "applyCols set the two-panel grid template");
+  w.document.getElementById("gutter-1").dispatchEvent(
+    new w.MouseEvent("mousedown", { bubbles: true, clientX: 100 }));
+  w.document.getElementById("gutter-1").dispatchEvent(
+    new w.MouseEvent("dblclick", { bubbles: true }));
+
+  // terminal disabled: the raw template still carries the {{TERM}} placeholder
+  // (!== "1"), which is exactly the served page when --no-terminal / Windows —
+  // the button must stay hidden and no term-open class can appear.
+  must(w.document.getElementById("term-toggle").classList.contains("hidden"),
+       "terminal button hidden when feature is off");
+  must(!w.document.body.classList.contains("term-open"),
+       "no term-open class when feature is off");
 } catch (e) {
   errors.push("payload: " + (e && e.stack || e));
+}
+
+// --- terminal enabled: separate dom with TERM=1 and a stubbed xterm ----------
+// (jsdom can't render a real xterm; the stub verifies the page's wiring —
+// button visible, open/hide toggles the grid class, open POSTs to the server.)
+try {
+  const htmlT = html.replace(/\{\{TERM\}\}/g, "1");
+  const domT = new JSDOM(htmlT.replace('<script src="/static/codemirror.js"></script>', ""), {
+    url: "http://127.0.0.1:8787/?t=TESTTOKEN&app=1",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+    virtualConsole: vc,
+  });
+  const wt = domT.window;
+  const posts = [];
+  wt.fetch = (url, opts) => { if (opts && opts.method === "POST") posts.push(url);
+    return Promise.resolve({ json: () => Promise.resolve({}) }); };
+  wt.EventSource = class { constructor(url) { this.url = url; } close() {} };
+  if (!wt.requestAnimationFrame) wt.requestAnimationFrame = (f) => setTimeout(f, 0);
+  wt.document.execCommand = () => true;
+  wt.prompt = () => null;
+  wt.confirm = () => true;
+  // xterm stub with the exact surface the page uses
+  wt.XTerm = {
+    Terminal: class {
+      constructor() { this.cols = 80; this.rows = 24; }
+      loadAddon() {} open() {} onData() {} onResize() {}
+      write() {} reset() {} focus() {}
+    },
+    FitAddon: class { activate() {} fit() {} },
+  };
+  wt.eval(readFileSync("draftwatch/assets/codemirror.js", "utf8"));
+  wt.eval(readFileSync("draftwatch/assets/marked.js", "utf8"));
+  wt.eval(readFileSync("draftwatch/assets/purify.js", "utf8"));
+  wt.eval(readFileSync("draftwatch/assets/turndown.js", "utf8"));
+  const inlineT = /<script>\n("use strict";[\s\S]*?)\n<\/script>/.exec(htmlT);
+  wt.eval(inlineT[1]);
+
+  const btn = wt.document.getElementById("term-toggle");
+  must(!btn.classList.contains("hidden"), "terminal button visible when enabled");
+  btn.click();
+  must(wt.document.body.classList.contains("term-open"), "terminal opens (grid class)");
+  must(/minmax\(240px/.test(wt.document.querySelector("main").style.gridTemplateColumns),
+       "three-panel grid template applied when terminal opens");
+  await new Promise((r) => setTimeout(r, 20));   // let the fetch promise settle
+  must(posts.some((u) => String(u).endsWith("/api/term/open")), "open POSTs /api/term/open");
+  wt.document.getElementById("term-hide").click();
+  must(!wt.document.body.classList.contains("term-open"), "hide collapses the panel");
+  btn.click();
+  must(wt.document.body.classList.contains("term-open"), "reopen restores the panel");
+  domT.window.close();
+} catch (e) {
+  errors.push("terminal: " + (e && e.stack || e));
 }
 
 if (errors.length) {

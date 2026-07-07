@@ -5,6 +5,7 @@ Drives a real running server over localhost with stdlib urllib, reads the SSE
 stream, exercises every API route, and checks the round-trip invariants against
 real git. Records ACTUAL observed output.
 """
+import base64
 import json
 import os
 import re
@@ -769,6 +770,116 @@ def test_19_app_flag_fallback():
         shutil.rmtree(stub, ignore_errors=True)
 
 
+def test_20_terminal_roundtrip_and_guards():
+    # Embedded terminal (POSIX): open spawns a shell, input round-trips through
+    # the PTY to the SSE output stream, close kills the whole process group.
+    # Security: no token -> 403, and the input route is header-only — a
+    # query-string token (fine for EventSource reads) must NOT authorize it.
+    if os.name != "posix":
+        record(20, "terminal round-trip (skipped: not POSIX)", True)
+        return
+    d, f = make_repo("hello\n")
+    port = free_port()
+    try:
+        with Server(d, "draft.md", port):
+            # guards first
+            res_no_tok = post(port, "/api/term/open", {}, token="")
+            no_tok_403 = res_no_tok.get("_code") == 403
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/api/term/input?t=%s" % (port, TOKEN),
+                data=json.dumps({"data": "x"}).encode(),
+                method="POST", headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                query_tok_403 = False
+            except urllib.error.HTTPError as e:
+                query_tok_403 = (e.code == 403)
+
+            # open + SSE round-trip
+            res = post(port, "/api/term/open", {"cols": 100, "rows": 30})
+            opened = res.get("running") is True and res.get("pid")
+            pid = res.get("pid")
+            out = bytearray()
+            done = threading.Event()
+
+            def read_term_sse():
+                r = urllib.request.Request(
+                    "http://127.0.0.1:%d/term/events?t=%s" % (port, TOKEN))
+                try:
+                    with urllib.request.urlopen(r, timeout=15) as resp:
+                        while not done.is_set():
+                            line = resp.readline()
+                            if not line:
+                                break
+                            if line.startswith(b"data: "):
+                                ev = json.loads(line[6:])
+                                if ev.get("data"):
+                                    out.extend(base64.b64decode(ev["data"]))
+                                if b"term_acc_42" in out:
+                                    done.set()
+                except Exception:
+                    pass
+
+            t = threading.Thread(target=read_term_sse, daemon=True)
+            t.start()
+            time.sleep(0.5)
+            res_in = post(port, "/api/term/input",
+                          {"data": "echo term_acc_$((40+2))\r"})
+            done.wait(timeout=8)
+            roundtrip = b"term_acc_42" in bytes(out)
+            res_rs = post(port, "/api/term/resize", {"cols": 120, "rows": 40})
+
+            # close kills the process group — the shell must be gone
+            res_cl = post(port, "/api/term/close", {})
+            killed = None
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.1)
+                except ProcessLookupError:
+                    killed = True
+                    break
+            ok = (no_tok_403 and query_tok_403 and bool(opened)
+                  and res_in.get("ok") is True and roundtrip
+                  and res_rs.get("ok") is True
+                  and res_cl.get("running") is False and killed is True)
+            record(20, "terminal: PTY round-trip, header-only token, group kill", ok,
+                   "no_tok_403={} query_tok_403={} opened={} roundtrip={} "
+                   "resize={} closed={} killed={}".format(
+                       no_tok_403, query_tok_403, bool(opened), roundtrip,
+                       res_rs.get("ok"), res_cl.get("running") is False, killed))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_21_no_terminal_flag():
+    # --no-terminal: the routes are absent (404, not 403), and the served page
+    # carries TERM=0 so the UI never renders the button. This is also the
+    # code path Windows takes (no pty module -> feature off).
+    d, f = make_repo("hello\n")
+    port = free_port()
+    try:
+        with Server(d, "draft.md", port, extra=["--no-terminal"]):
+            codes = []
+            for path in ("/api/term/open", "/api/term/input",
+                         "/api/term/resize", "/api/term/close"):
+                res = post(port, path, {"data": "x", "cols": 80, "rows": 24})
+                codes.append(res.get("_code"))
+            try:
+                get(port, "/term/events?t=" + TOKEN)
+                sse_code = 200
+            except urllib.error.HTTPError as e:
+                sse_code = e.code
+            page = get(port, "/")
+            flag_off = 'TERM_ENABLED = "0"' in page
+            ok = all(c == 404 for c in codes) and sse_code == 404 and flag_off
+            record(21, "--no-terminal: routes 404, page flag off", ok,
+                   "codes={} sse={} flag_off={}".format(codes, sse_code, flag_off))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     print("=== draftwatch acceptance tests (git %s, py %s) ===" % (
         git_out(["--version"], ".").strip(),
@@ -792,6 +903,8 @@ def main():
     test_17_start_tracking_untracked()
     test_18_static_assets()
     test_19_app_flag_fallback()
+    test_20_terminal_roundtrip_and_guards()
+    test_21_no_terminal_flag()
     npass = sum(1 for r in RESULTS if r[2])
     nfail = len(RESULTS) - npass
     print("\n=== %d passed, %d failed ===" % (npass, nfail))
