@@ -2,15 +2,15 @@
 
 ![Draftwatch reviewing an agent's edits: your working text on the left in a real editor, the word diff against your baseline on the right. Click any change to revert it.](https://raw.githubusercontent.com/mtkonczal/Draftwatch/main/assets/draftwatch_screenshot.png)
 
-It’s difficult for writers to have AI act as an editor, because it’s never clear what exactly it changed when it does edits. You can’t trust eyeballing it, but making changes manually yourself means you don’t save that much time in the process. So you either ignore this potentially powerful writing helper, or you trust it even at the risk it does far more than you asked.
+It’s difficult for writers to have AI act as an editor, because it’s never clear exactly what it changed. You can’t trust eyeballing it, but making the changes manually yourself means you don’t save much time. So you either ignore this potentially powerful writing helper, or you trust it at the risk that it does far more than you asked.
 
-Enter Draftwatch. Draftwatch is a lightweight editing tool for writers. You can use it to create and format new Markdown documents from scratch. But it’s more powerful use is to use it with AI to review an AI agent's edits to your writing exactly down to the word level. The changes are managed by git, the way a developer reviews changes to their code, but formatted for writers who need to see each exact word change to be comfortable.
+Enter Draftwatch. Draftwatch is a lightweight editing tool for writers. You can use it to create and format new Markdown documents from scratch, but its more powerful use is reviewing an AI agent's edits to your writing, down to the exact word. Changes are managed by git, the way a developer reviews changes to their code, but formatted for writers who need to see each exact word change to feel comfortable.
 
 When reviewing AI edits, instead of guessing what an LLM changed in your document, Draftwatch shows you the exact, git-backed word-diff. You can step through, keep or revert each change individually, and commit when you're done.
 
-Crucially, the diff comes from your local git—not from the AI vendor and not from a JavaScript approximation. You get absolute, independent verification of what the agent or script actually did.
+The diff comes from your local git, not from the AI vendor and not from a JavaScript approximation. You get independent verification of what the agent or script actually did.
 
-Why this vibe-coded app? I designed this to be an Integrated Development Environment (IDE) for writers. Most IDEs show “git diff” at the line level, which is appropriate for coders (where each command is its own line generally) but terrible for writers, since they work at the paragraph level. This IDE is built around displaying "git diff --word-diff=porcelain” which allows writers to see the specific words being edited. Even for the IDEs that do show this, it is generally more difficult for writers to track the edits and those IDEs have coding features and visual baggage that writers won’t need.
+Why this vibe-coded app? I designed it to be an Integrated Development Environment (IDE) for writers. Most IDEs show `git diff` at the line level, which is appropriate for coders (where each statement is generally its own line) but terrible for writers, who work at the paragraph level. This IDE is built around displaying `git diff --word-diff=porcelain`, which lets writers see the specific words being edited. Even the IDEs that do show this make it harder for writers to track edits, and they carry coding features and visual baggage that writers won’t need.
 
 Python 3.9+ and git are the only requirements. If you are a writer, AI itself can help you install these widely used tools. The front-end libraries (CodeMirror 6, marked, DOMPurify, Turndown, xterm.js) are vendored and served locally, so Draftwatch works completely offline and binds to your local computer.
 
@@ -43,7 +43,7 @@ Or to start with a specific file:
 draftwatch draft.md
 ```
 
-You can also run it outside any git repository. Draftwatch starts in **write-only mode** — the editor, preview, and saving all work, but the review loop (diffs, revert, commit) is off because there's no git to compare against. The right panel offers a one-click **initialize git here** to turn the folder into a repo and switch on the full review loop.
+You can also run it outside any git repository. Draftwatch starts in **write-only mode**: the editor, preview, and saving all work, but the review loop (diffs, revert, commit) is off because there's no git to compare against. The right panel offers a one-click **initialize git here** to turn the folder into a repo and switch on the full review loop.
 
 Starting a second instance while one is already running just works: if the default port is busy, Draftwatch picks a free one and prints the URL.
 
@@ -53,7 +53,7 @@ Start without a file (`draftwatch`) to pick one in the window.
 
 ## The terminal panel
 
-Click **terminal** in the toolbar to open a third panel running a real shell in your repo (macOS/Linux). Launch `claude`, `codex`, or any command there: when the agent edits the file you're watching, the diff panel lights up live — prompt on the right, review in the middle, write on the left. **hide** collapses the panel and leaves the shell running (an agent mid-task keeps working); **end session** kills the shell and everything it started. No snapshots are taken when you run commands — edits accumulate against whatever baseline you've selected, and you review them on your schedule. On Windows the panel is unavailable and Draftwatch simply runs without it.
+Click **terminal** in the toolbar to open a third panel running a real shell in your repo (macOS/Linux). Launch `claude`, `codex`, or any command there: when the agent edits the file you're watching, the diff panel lights up live: prompt on the right, review in the middle, write on the left. **hide** collapses the panel and leaves the shell running (an agent mid-task keeps working); **end session** kills the shell and everything it started. No snapshots are taken when you run commands; edits accumulate against whatever baseline you've selected, and you review them on your schedule. On Windows the panel is unavailable and Draftwatch runs without it.
 
 ## Features
 

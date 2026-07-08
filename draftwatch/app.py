@@ -40,8 +40,8 @@ TERM_SUPPORTED = _term is not None
 # Single source of truth for the version and the date of the latest release.
 # __init__.py re-exports __version__; the About panel shows both (injected into
 # the served page from these constants).
-__version__ = "0.2.0"
-RELEASE_DATE = "2026-07-06"
+__version__ = "0.2.1"
+RELEASE_DATE = "2026-07-07"
 
 # Preferred port. When --port is not given, Draftwatch tries this first and
 # falls back to a free port if it is busy (so a second instance can start while
@@ -143,6 +143,21 @@ def push_ref(root):
         reldate = parts[1] if len(parts) > 1 else ""
         return name, short, reldate
     return None, None, None
+
+
+def verify_commit_ref(root, ref):
+    """True only if `ref` names an existing commit object in `root`.
+
+    Two guards: reject anything not a plain string or beginning with '-' (so a
+    ref can never be parsed by a later `git diff <ref>` as an option — e.g.
+    `--output=FILE` would make git write to an arbitrary path), then confirm the
+    ref actually resolves to a commit with `rev-parse --verify`. The client only
+    ever sends full SHAs from the commit dropdown; this hardens the API against a
+    hand-crafted request (which still needs the session token to arrive)."""
+    if not isinstance(ref, str) or not ref or ref.startswith("-"):
+        return False
+    rc, _, _ = run_git(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], root)
+    return rc == 0
 
 
 def git_diff_text(root, baseline, relpath, abspath):
@@ -860,6 +875,29 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Defense-in-depth headers. The preview already runs agent-authored
+        # markdown through DOMPurify; these add a second layer and, crucially,
+        # keep the session token from leaking off-origin:
+        #   Referrer-Policy   — the token rides in the launch URL; never send a
+        #                       Referer carrying it to any resource the page loads.
+        #   CSP               — scripts/styles/fetch are same-origin only, so a
+        #                       sanitizer bypass still can't call out or exfiltrate
+        #                       (connect-src 'self'). base/form/frame are locked
+        #                       down. img-src stays permissive (data:/https:) so a
+        #                       writer's legitimate external images still render;
+        #                       with connect-src+Referrer-Policy above, a stray
+        #                       image beacon carries no token and no document data.
+        #   nosniff           — don't let a response be reinterpreted as another type.
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: https:; "
+            "connect-src 'self'; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -1170,6 +1208,8 @@ class Handler(BaseHTTPRequestHandler):
                 ref = body.get("ref")
                 if not ref:
                     return self._json({"error": "missing ref"}, 400)
+                if not verify_commit_ref(st.root, ref):
+                    return self._json({"error": "invalid or unknown commit ref"}, 400)
                 label = body.get("label", ref)
                 with st.lock:
                     st.baseline = {"kind": "commit", "ref": ref, "label": label}
@@ -1352,6 +1392,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Draftwatch</title>
 <script src="/static/codemirror.js"></script>
@@ -1639,8 +1680,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel.term h2 button {
     text-transform: none; letter-spacing: normal; font-weight: 400;
   }
-  #term-host { flex: 1; min-height: 0; padding: 6px 2px 2px 8px; }
-  #term-host .terminal { height: 100%; }
+  /* Padding lives on the xterm element, not #term-host: the fit addon sizes
+     the terminal from the parent's computed width/height (which, with the
+     global border-box rule, includes the parent's padding) minus the
+     terminal element's own padding. Padding the host makes fit() run one
+     column wide, pushing text under the viewport scrollbar. */
+  #term-host { flex: 1; min-height: 0; }
+  #term-host .terminal { height: 100%; padding: 6px 2px 2px 8px; }
   .panel h2 {
     margin: 0;
     padding: 6px 12px;
@@ -2083,9 +2129,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   // ---- session token (from the URL draftwatch printed/opened) ----
+  // Read it once, then keep it in sessionStorage and strip it out of the
+  // visible URL. This keeps the token out of the address bar, browser history,
+  // and any screen-share, while a reload still authenticates (sessionStorage
+  // survives reloads within the tab). Note: this does NOT remove the token from
+  // the browser process's command line on a shared host — see the README
+  // security notes; prefer the native window (--app) there.
   var TOKEN = (function () {
+    var t = "";
     var m = /(?:\?|&)t=([^&]+)/.exec(window.location.search);
-    return m ? decodeURIComponent(m[1]) : "";
+    if (m) t = decodeURIComponent(m[1]);
+    try {
+      if (t) sessionStorage.setItem("draftwatch-token", t);
+      else t = sessionStorage.getItem("draftwatch-token") || "";
+    } catch (e) {}
+    return t;
   })();
 
   // ---- launch surface (native window vs browser) ----
@@ -2095,6 +2153,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   var APP_MODE = /(?:\?|&)app=1(?:&|$)/.test(window.location.search);
   var APP_FALLBACK = /(?:\?|&)appfallback=1(?:&|$)/.test(window.location.search);
   if (APP_MODE) document.body.classList.add("app-mode");
+
+  // Now that the token and launch flags have been read, drop `t` from the
+  // address bar (other params are preserved). The token still lives in the JS
+  // var and sessionStorage, so requests and reloads keep working.
+  try {
+    var _u = new URL(window.location.href);
+    if (_u.searchParams.has("t")) {
+      _u.searchParams.delete("t");
+      window.history.replaceState({}, "", _u.pathname + _u.search + _u.hash);
+    }
+  } catch (e) {}
 
   // ---- server notification of client state (turn-based contract) ----
   function postJSON(url, obj, cb) {

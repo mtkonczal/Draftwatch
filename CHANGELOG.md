@@ -3,6 +3,31 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## 0.2.1 — 2026-07-07
+
+- **Security hardening.** Commit refs sent to the set-baseline API are now
+  validated before use: anything that isn't a plain string, or that starts with
+  `-`, is rejected (so a ref can never be parsed by a later `git diff` as an
+  option such as `--output=FILE`), and the ref must resolve to a real commit via
+  `rev-parse --verify`. The client only ever sends full SHAs from the dropdown;
+  this hardens the route against a hand-crafted request.
+- **Defense-in-depth HTTP headers** on served responses: a locked-down
+  Content-Security-Policy (`connect-src 'self'`, `base-uri 'none'`,
+  `form-action 'none'`, `frame-ancestors 'none'`), `X-Content-Type-Options:
+  nosniff`, and `Referrer-Policy: no-referrer`. Together with the existing
+  DOMPurify pass, a sanitizer bypass still can't call out or exfiltrate, and the
+  session token never leaks off-origin in a Referer. `img-src` stays permissive
+  (`data:`/`https:`) so a writer's legitimate external images still render.
+- **Session token kept out of the address bar.** The token is read once from the
+  launch URL, stored in `sessionStorage`, and stripped from the visible URL, so
+  it no longer sits in the address bar, browser history, or a screen-share.
+  Reloads still authenticate. (This does not remove the token from a shared
+  host's browser command line — prefer the native `--app` window there.)
+- Fixed a terminal-panel sizing bug: padding moved off `#term-host` onto the
+  xterm element so the fit addon no longer computes one column too wide and
+  pushes text under the viewport scrollbar.
+- README copy tightened.
+
 ## 0.2.0 — 2026-07-06
 
 - Arming commit now gives the message box the footer's full width: the review

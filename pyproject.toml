@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "draftwatch"
-version = "0.2.0"
+version = "0.2.1"
 description = "Review an AI agent's edits to your writing files as a real git word-diff — keep or revert changes hunk by hunk, then commit."
 readme = "README.md"
 requires-python = ">=3.9"
