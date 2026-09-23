@@ -3,6 +3,21 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## 0.2.2 — 2026-09-23
+
+- **Local images in the preview.** Relative image paths such as
+  `![](figs/chart.png)` now render, resolved against the open file's directory.
+  They are fetched through a token-gated `/api/image` route that serves only
+  image types, only from inside the repository (no traversal, absolute paths,
+  or symlink escape), and only up to 25 MB, then shown as `blob:` URLs
+  (`img-src` gains `blob:`). Editing in the preview writes the original path
+  back to the markdown. Images are re-read each time the preview opens; one
+  that can't be served shows its alt text in a dashed outline.
+- Fixed the search panel (Ctrl/Cmd-F) being hard to read: CodeMirror's own
+  light-palette styles were overriding the app theme, which in dark mode left
+  near-white text on a white search field and pale buttons, and shrank the
+  panel text to ~9px in both themes.
+
 ## 0.2.1 — 2026-07-07
 
 - **Security hardening.** Commit refs sent to the set-baseline API are now
