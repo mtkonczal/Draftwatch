@@ -60,7 +60,7 @@ const must = (cond, name) => { if (!cond) errors.push("assert: " + name); };
 must(w.document.querySelector("#editor-host .cm-editor"), "CodeMirror editor mounted");
 must(w.__lastES && /\/events\?t=TESTTOKEN/.test(w.__lastES.url), "EventSource carries token");
 must(w.document.body.classList.contains("app-mode"), "app=1 applies app-mode chrome");
-must(w.document.querySelector("header .mark .ma"), "identity mark rendered");
+must(w.document.querySelector("header > svg.logo use[href=\"#dw-logo\"]") && w.document.getElementById("dw-logo"), "identity logo rendered");
 
 // simulate an SSE payload with one substitution hunk
 try {

@@ -1619,7 +1619,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   /* app chrome (native window via pywebview, ?app=1): the OS title bar
      already says "draftwatch · file", so the in-page wordmark is redundant —
-     drop it, tighten the toolbar, and make the chrome feel native (no text
+     drop the word (the logo, outside .title, stays as the brand), tighten the toolbar, and make the chrome feel native (no text
      selection on controls, no web-page tells). */
   body.app-mode header .title { display: none; }
   body.app-mode header { padding: 5px 10px; }
@@ -1640,13 +1640,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex;
     flex-direction: column;
   }
+  /* logo on the left, spanning both toolbar rows; the rows stack beside it */
   header {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    align-items: center;
+    gap: 10px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--panel);
+  }
+  header .rows {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   /* Two fixed rows that never wrap into each other, so the layout stays put
      regardless of title length or window width:
@@ -1670,19 +1678,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     gap: 7px;
     letter-spacing: .02em;
   }
-  /* the +/− mark: the product in two characters (keep the add, strike the del) */
-  .mark {
-    display: inline-flex;
-    align-items: center;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 0 5px;
-    font-weight: 700;
-    line-height: 1.45;
-  }
-  .mark .ma { color: var(--add-fg); }
-  .mark .md { color: var(--del-fg); text-decoration: line-through; }
+  /* the logo: same drawing as the Dock icon and favicon (scripts/make_icon.py),
+     inline so it stays crisp at any size. Fixed brand colors, not the accent. */
+  .logo { width: 28px; height: 28px; flex: none; display: block; }
+  header > .logo { width: 54px; height: 54px; }
+  #about h2 .logo { width: 48px; height: 48px; }
   header .status { color: var(--muted); }
   header #status {
     flex: 1 1 auto;
@@ -2069,9 +2069,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
+<!-- logo geometry mirrors scripts/make_icon.py (1024 grid, tile at 100..924) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="dw-logo-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d82c7"/><stop offset="1" stop-color="#215892"/>
+    </linearGradient>
+    <symbol id="dw-logo" viewBox="100 100 824 824">
+      <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#dw-logo-bg)"/>
+      <path fill="#f5f9fe" fill-rule="evenodd"
+            d="M322 262H488A250 250 0 0 1 488 762H322Z M428 368H488A144 144 0 0 1 488 656H428Z"/>
+      <rect x="470" y="452" width="120" height="42" rx="21" fill="#7ed08a"/>
+      <rect x="470" y="530" width="92" height="42" rx="21" fill="#f08e7f"/>
+    </symbol>
+  </defs>
+</svg>
 <header>
+  <svg class="logo" aria-hidden="true"><use href="#dw-logo"/></svg>
+  <div class="rows">
   <div class="bar">
-    <span class="title"><span class="mark"><span class="ma">+</span><span class="md">−</span></span>Draftwatch</span>
+    <span class="title"><span class="word">Draftwatch</span></span>
     <span class="filepick">
       <label class="status" for="file-select">file</label>
       <select id="file-select" title="pick a writing file in this repo"></select>
@@ -2096,6 +2113,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <button id="accent-toggle" title="accent color — click to cycle"><span class="swatch"></span><span id="accent-name">blue</span></button>
     <button id="about-btn" title="what is Draftwatch?">about</button>
   </div>
+  </div>
 </header>
 
 <div id="banner">
@@ -2108,7 +2126,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="about" role="dialog" aria-modal="true" aria-label="About Draftwatch">
   <div class="card">
     <button class="about-close" id="about-close" title="close (Esc)">close ✕</button>
-    <h2><span class="mark"><span class="ma">+</span><span class="md">−</span></span>Draftwatch</h2>
+    <h2><svg class="logo" aria-hidden="true"><use href="#dw-logo"/></svg>Draftwatch</h2>
     <p class="tag">Review an AI agent's edits as a real git diff — locally.</p>
     <p>An autonomous agent (Claude Code and the like) edits your files on disk.
       Draftwatch shows you exactly what changed, as the word-level diff
