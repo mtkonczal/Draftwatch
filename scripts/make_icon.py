@@ -1,6 +1,7 @@
-"""Maintainer-only: draw the app icon to draftwatch/assets/icon.png.
+"""Maintainer-only: draw the app icon to draftwatch/assets/icon.png (the native
+window's Dock icon) and favicon.png (the browser tab).
 
-The PNG is committed, so end users never need Pillow; rerun this only to change
+The PNGs are committed, so end users never need Pillow; rerun this only to change
 the design (pip install pillow && python scripts/make_icon.py). The "D" is built
 from plain shapes rather than a font glyph, so there are no font-licensing
 questions. Inside its counter sit two short strokes in the diff panel's add
@@ -12,8 +13,9 @@ from PIL import Image, ImageDraw
 
 S = 1024            # final size (macOS Dock icons are drawn from a 1024 master)
 K = 4               # supersampling factor for smooth edges
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                   "draftwatch", "assets", "icon.png")
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                      "draftwatch", "assets")
+FAVICON = 64        # 32px tab icon at 2x
 
 TOP = (61, 130, 199)        # steel-blue gradient, around the app's --accent #2f6fb0
 BOTTOM = (33, 88, 146)
@@ -62,9 +64,15 @@ def main():
     draw.rounded_rectangle(box(470, 452, 590, 494), radius=21 * K, fill=ADD)
     draw.rounded_rectangle(box(470, 530, 562, 572), radius=21 * K, fill=DEL)
 
+    # Favicon: the tile cropped full-bleed (no Dock-shadow margin), since a
+    # browser tab gives the icon only a tiny square.
+    fav = icon.crop(tuple(box(100, 100, 924, 924))).resize((FAVICON, FAVICON),
+                                                          Image.LANCZOS)
     icon = icon.resize((S, S), Image.LANCZOS)
-    icon.save(OUT, optimize=True)
-    print("wrote", os.path.normpath(OUT), os.path.getsize(OUT), "bytes")
+    for name, im in (("icon.png", icon), ("favicon.png", fav)):
+        out = os.path.join(ASSETS, name)
+        im.save(out, optimize=True)
+        print("wrote", os.path.normpath(out), os.path.getsize(out), "bytes")
 
 
 if __name__ == "__main__":

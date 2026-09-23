@@ -840,6 +840,7 @@ STATIC_ASSETS = {
     "marked.js": "application/javascript; charset=utf-8",
     "purify.js": "application/javascript; charset=utf-8",
     "turndown.js": "application/javascript; charset=utf-8",
+    "favicon.png": "image/png",
 }
 
 
@@ -1462,6 +1463,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Draftwatch</title>
+<link rel="icon" type="image/png" href="/static/favicon.png">
 <script src="/static/codemirror.js"></script>
 <script src="/static/marked.js"></script>
 <script src="/static/purify.js"></script>

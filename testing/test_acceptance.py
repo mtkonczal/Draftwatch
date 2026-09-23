@@ -728,6 +728,13 @@ def test_18_static_assets():
             ok_sizes = (sizes["codemirror.js"] > 100000
                         and sizes["marked.js"] > 10000
                         and sizes["purify.js"] > 10000)
+            # the tab icon is binary, so read it raw rather than via get()
+            with urllib.request.urlopen(
+                    "http://127.0.0.1:%d/static/favicon.png" % port, timeout=5) as r:
+                fav = r.read()
+                ok_fav = (r.headers.get("Content-Type") == "image/png"
+                          and fav.startswith(b"\x89PNG"))
+            sizes["favicon.png"] = len(fav)
             codes = []
             for bad in ("/static/nope.js", "/static/../app.py",
                         "/static/codemirror.js.bak", "/static/"):
@@ -738,7 +745,7 @@ def test_18_static_assets():
                     codes.append(e.code)
             ok_404 = all(c == 404 for c in codes)
             record(18, "vendored /static assets: allowlist 200, unknown 404",
-                   ok_sizes and ok_404,
+                   ok_sizes and ok_fav and ok_404,
                    "sizes={} bad_request_codes={}".format(sizes, codes))
     finally:
         shutil.rmtree(d, ignore_errors=True)
