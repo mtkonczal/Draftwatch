@@ -3799,6 +3799,30 @@ def _webview_available():
         return False
 
 
+def _app_identity_kwargs(webview):
+    """Brand the native window as Draftwatch rather than the Python interpreter
+    running it: the Dock icon (draftwatch/assets/icon.png, drawn by
+    scripts/make_icon.py) and, on macOS, the app name in the menu bar and its
+    About/Hide/Quit items. Best effort: any failure leaves pywebview's defaults.
+    Returns the kwargs for webview.start()."""
+    if sys.platform == "darwin":
+        try:
+            from Foundation import NSBundle   # PyObjC, a pywebview dependency on macOS
+            info = NSBundle.mainBundle().infoDictionary()
+            if info is not None:
+                info["CFBundleName"] = "Draftwatch"
+        except Exception:
+            pass
+    icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+    try:
+        import inspect
+        takes_icon = "icon" in inspect.signature(webview.start).parameters
+    except (TypeError, ValueError):
+        takes_icon = False
+    # start(icon=) arrived in pywebview 5; on 4.x the window just keeps its default
+    return {"icon": icon} if takes_icon and os.path.isfile(icon) else {}
+
+
 def _run_app_window(url, title):
     """Open the UI in a native window (PyWebView). Returns True when the window
     ran and was closed by the user; False when unavailable, in which case the
@@ -3816,7 +3840,7 @@ def _run_app_window(url, title):
     try:
         webview.create_window(title, url, width=1280, height=860,
                               min_size=(880, 560))
-        webview.start()
+        webview.start(**_app_identity_kwargs(webview))
         return True
     except Exception as e:
         sys.stderr.write(
