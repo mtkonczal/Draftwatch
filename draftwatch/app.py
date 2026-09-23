@@ -244,6 +244,53 @@ def resolve_new_file(root, path):
     return cand
 
 
+# Local images the preview may load: extension -> MIME type. The image route
+# serves only these, only from inside the repo root, and only up to the size
+# cap, so it can't be used to read arbitrary files (source, .env, keys).
+IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+}
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+
+
+def resolve_image(root, relpath, src):
+    """Resolve an <img src> from the markdown to (abspath, mime), or raise ValueError.
+
+    `src` is the raw attribute value, resolved relative to the open file's
+    directory (the repo root when no file is open), the way a markdown renderer
+    on disk would. URLs, absolute paths, and anything resolving outside the repo
+    or to a non-image type are refused.
+    """
+    from urllib.parse import unquote
+    s = (src or "").split("#", 1)[0].split("?", 1)[0].strip()
+    s = unquote(s)
+    if not s:
+        raise ValueError("no image path given")
+    if ":" in s.split("/", 1)[0] or s.startswith("/") or os.path.isabs(s):
+        raise ValueError("only relative image paths are served")
+    base = os.path.join(root, os.path.dirname(relpath)) if relpath else root
+    cand = os.path.realpath(os.path.join(base, s))
+    root_prefix = root.rstrip(os.sep) + os.sep
+    if not cand.startswith(root_prefix):
+        raise ValueError("refusing an image outside the repository")
+    mime = IMAGE_TYPES.get(os.path.splitext(cand)[1].lower())
+    if mime is None:
+        raise ValueError("not an image type the preview serves")
+    if not os.path.isfile(cand):
+        raise ValueError("image not found")
+    if os.path.getsize(cand) > MAX_IMAGE_BYTES:
+        raise ValueError("image too large")
+    return cand, mime
+
+
 def list_repo_files(root, has_repo=True, limit=5000):
     """Files for the picker. In a git repo: tracked + non-ignored untracked,
     sorted, deduped. In write-only mode (no repo), fall back to a filesystem
@@ -887,6 +934,8 @@ class Handler(BaseHTTPRequestHandler):
         #                       writer's legitimate external images still render;
         #                       with connect-src+Referrer-Policy above, a stray
         #                       image beacon carries no token and no document data.
+        #                       blob: is for local images, fetched with the token
+        #                       from /api/image and shown via object URLs.
         #   nosniff           — don't let a response be reinterpreted as another type.
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -895,7 +944,7 @@ class Handler(BaseHTTPRequestHandler):
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https:; "
+            "img-src 'self' data: blob: https:; "
             "connect-src 'self'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
@@ -939,6 +988,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_baselines()
         elif path == "/api/files":
             self._api_files()
+        elif path == "/api/image":
+            self._api_image()
         else:
             self._send(404, "not found", "text/plain")
 
@@ -1030,6 +1081,22 @@ class Handler(BaseHTTPRequestHandler):
             has_repo = st.has_repo
         self._json({"files": list_repo_files(st.root, has_repo),
                     "current": current, "repo": has_repo})
+
+    def _api_image(self):
+        """A local image referenced by the open file, for the preview. Token-gated
+        like the rest of /api/* (the client fetches it with the header and shows
+        it as a blob: URL), so file contents never load without the session."""
+        st = self.state
+        with st.lock:
+            relpath = st.relpath
+        vals = self._query().get("src")
+        try:
+            abspath, mime = resolve_image(st.root, relpath, vals[0] if vals else "")
+            with open(abspath, "rb") as fh:
+                data = fh.read()
+        except (ValueError, OSError) as e:
+            return self._send(404, str(e), "text/plain")
+        self._send(200, data, mime)
 
     # ---- POST ----
     def do_POST(self):
@@ -1727,30 +1794,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: rgba(127, 127, 127, .28);
   }
   #editor-host .cm-placeholder { color: var(--muted); font-style: italic; }
-  /* CM search panel, themed with the app variables (light/dark for free) */
-  .cm-panels {
-    background: var(--panel) !important;
-    color: var(--text) !important;
-    border-color: var(--border) !important;
+  /* CM search panel, themed with the app variables (light/dark for free).
+     Scoped under #editor-host on purpose: CodeMirror's base theme injects
+     two-class rules (e.g. `.ͼ2 .cm-textfield`, `.ͼ2 .cm-button`) that outrank a
+     bare `.cm-panels input`, and since no dark theme is registered with CM it
+     always applies its LIGHT palette (white input, pale gradient buttons, 70%
+     font). Unscoped, that left near-white dark-mode text on a white field. */
+  #editor-host .cm-panels {
+    background: var(--panel);
+    color: var(--text);
+    border-color: var(--border);
   }
-  .cm-panels input, .cm-panels button, .cm-panels label {
+  #editor-host .cm-panels input, #editor-host .cm-panels button, #editor-host .cm-panels label {
     font-family: var(--mono);
     font-size: 12px;
     color: var(--text);
   }
-  .cm-panels input {
+  #editor-host .cm-panels input[type="checkbox"] { accent-color: var(--accent); }
+  #editor-host .cm-panels .cm-textfield {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 4px;
   }
-  .cm-panels button {
+  #editor-host .cm-panels .cm-textfield:focus { outline: none; border-color: var(--accent); }
+  #editor-host .cm-panels .cm-button {
     background: var(--bg);
-    border: 1px solid var(--border) !important;
+    background-image: none;
+    border: 1px solid var(--border);
     border-radius: 4px;
     cursor: pointer;
   }
-  .cm-searchMatch { background: var(--warn-bg); outline: 1px solid var(--warn-border); }
-  .cm-searchMatch-selected { background: var(--warn-border); }
+  #editor-host .cm-panels .cm-button:hover { border-color: var(--accent); }
+  #editor-host .cm-panels .cm-button:active { background-image: none; }
+  #editor-host .cm-searchMatch { background: var(--warn-bg); outline: 1px solid var(--warn-border); }
+  #editor-host .cm-searchMatch-selected { background: var(--warn-border); }
+  /* highlightSelectionMatches: CM's default is a bright translucent green */
+  #editor-host .cm-selectionMatch { background: rgba(127, 127, 127, .22); }
 
   /* rendered markdown preview: reading typography, sanitized content only */
   #preview {
@@ -1790,6 +1869,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     color: var(--muted);
   }
   #preview img { max-width: 100%; }
+  /* a local image the server could not serve: the alt text shows in its place */
+  #preview img.img-missing { outline: 1px dashed var(--del-fg); outline-offset: 2px; color: var(--muted); }
   #preview hr { border: none; border-top: 1px solid var(--border); }
   #preview table { border-collapse: collapse; }
   #preview th, #preview td { border: 1px solid var(--border); padding: 4px 9px; }
@@ -2933,6 +3014,61 @@ INDEX_HTML = r"""<!DOCTYPE html>
     strongDelimiter: "**",
     linkStyle: "inlined"
   });
+
+  // Local images (e.g. ![](figs/chart.png)). A relative src would resolve to a
+  // bare path on this server and 404, so the sanitizer moves it to data-md-src
+  // (no request fires from the markup), and loadLocalImages fetches it through
+  // the token-gated /api/image route and shows it as a blob: URL. data-md-src
+  // keeps the markdown's own path, which Turndown writes back on preview edits
+  // (never the blob: URL; its default rule would also drop a src-less image).
+  function isLocalSrc(s) {
+    return !!s && !/^([a-z][a-z0-9+.-]*:|\/|#)/i.test(s);
+  }
+  DOMPurify.addHook("afterSanitizeAttributes", function (node) {
+    if (node.nodeName !== "IMG") return;
+    var src = node.getAttribute("src");
+    if (!isLocalSrc(src)) return;
+    node.setAttribute("data-md-src", src);
+    node.removeAttribute("src");
+  });
+  TURN.addRule("localImage", {
+    filter: function (node) {
+      return node.nodeName === "IMG" && node.hasAttribute("data-md-src");
+    },
+    replacement: function (content, node) {
+      var clean = function (a) { return (a || "").replace(/(\n+\s*)+/g, "\n"); };
+      var title = clean(node.getAttribute("title"));
+      return "![" + clean(node.getAttribute("alt")) + "](" +
+        node.getAttribute("data-md-src") + (title ? ' "' + title + '"' : "") + ")";
+    }
+  });
+  var imageCache = {};   // "<file>|<src>" -> Promise of a blob: URL, or null
+  function clearImageCache() {
+    Object.keys(imageCache).forEach(function (k) {
+      imageCache[k].then(function (u) { if (u) URL.revokeObjectURL(u); });
+    });
+    imageCache = {};
+  }
+  function loadLocalImages(root) {
+    root.querySelectorAll("img[data-md-src]").forEach(function (img) {
+      var src = img.getAttribute("data-md-src");
+      var key = (currentFile || "") + "|" + src;
+      if (!imageCache[key]) {
+        imageCache[key] = fetch("/api/image?src=" + encodeURIComponent(src),
+                                { headers: { "X-Draftwatch-Token": TOKEN } })
+          .then(function (r) { return r.ok ? r.blob() : null; })
+          .then(function (b) { return b ? URL.createObjectURL(b) : null; })
+          .catch(function () { return null; });
+        // don't cache a miss: the image may be added to disk later
+        imageCache[key].then(function (u) { if (!u) delete imageCache[key]; });
+      }
+      imageCache[key].then(function (u) {
+        if (u) { img.src = u; img.classList.remove("img-missing"); }
+        else img.classList.add("img-missing");
+      });
+    });
+  }
+
   function renderPreview() {
     var out = "";
     try {
@@ -2945,6 +3081,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     // (innerHTML assignment does not fire 'input', but keep the intent explicit)
     $("preview").innerHTML = out ||
       '<p class="empty">nothing to preview</p>';
+    loadLocalImages($("preview"));
   }
 
   // Convert the edited rendered HTML back to markdown and push it into the
@@ -2975,7 +3112,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     $("preview").setAttribute("contenteditable", on ? "true" : "false");
     // the format buttons + save stay available in preview — you can write here too
     $("view-toggle").textContent = on ? "source" : "preview";
-    if (on) renderPreview();
+    // re-read local images each time preview opens, so a regenerated chart shows
+    if (on) { clearImageCache(); renderPreview(); }
   }
   $("view-toggle").addEventListener("click", function () { setPreviewMode(!previewMode); });
 

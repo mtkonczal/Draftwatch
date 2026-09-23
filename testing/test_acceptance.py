@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -880,6 +881,57 @@ def test_21_no_terminal_flag():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_22_local_images():
+    # /api/image serves image files referenced by the open file, resolved
+    # relative to that file's directory; it must refuse non-images, paths
+    # outside the repo (traversal, absolute, symlink escape), URLs, and
+    # requests without the session token.
+    d, f = make_repo("x\n")
+    port = free_port()
+    try:
+        os.makedirs(os.path.join(d, "docs", "figs"))
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 16
+        with open(os.path.join(d, "docs", "figs", "chart.png"), "wb") as fh:
+            fh.write(png)
+        with open(os.path.join(d, "docs", "post.md"), "w") as fh:
+            fh.write("![c](figs/chart.png)\n")
+        with open(os.path.join(d, "docs", "notes.txt"), "w") as fh:
+            fh.write("secret\n")
+        os.symlink("/etc/hosts", os.path.join(d, "docs", "figs", "link.png"))
+
+        def fetch(src, token=None):
+            tok = TOKEN if token is None else token
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/api/image?src=%s"
+                % (port, urllib.parse.quote(src, safe="")),
+                headers={"X-Draftwatch-Token": tok} if tok else {})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    return r.status, r.headers.get("Content-Type"), r.read()
+            except urllib.error.HTTPError as e:
+                return e.code, None, b""
+
+        with Server(d, "draft.md", port):
+            time.sleep(0.3)
+            opened = post(port, "/api/open", {"path": "docs/post.md"}).get("file")
+            code, ctype, body = fetch("figs/chart.png")
+            ok_serve = code == 200 and ctype == "image/png" and body == png
+            ok_dot = fetch("./figs/chart.png")[0] == 200
+            bad = {s: fetch(s)[0] for s in (
+                "notes.txt", "../draft.md", "../../../../etc/hosts",
+                "/etc/hosts", "file:///etc/hosts", "https://example.com/a.png",
+                "figs/link.png", "figs/missing.png")}
+            ok_bad = all(c == 404 for c in bad.values())
+            no_tok = fetch("figs/chart.png", token="")[0]
+            ok = (opened == os.path.join("docs", "post.md") and ok_serve
+                  and ok_dot and ok_bad and no_tok == 403)
+            record(22, "local images: /api/image serves in-repo images only",
+                   ok, "opened={} serve={} dot={} bad={} no_token={}".format(
+                       opened, ok_serve, ok_dot, bad, no_tok))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     print("=== draftwatch acceptance tests (git %s, py %s) ===" % (
         git_out(["--version"], ".").strip(),
@@ -905,6 +957,7 @@ def main():
     test_19_app_flag_fallback()
     test_20_terminal_roundtrip_and_guards()
     test_21_no_terminal_flag()
+    test_22_local_images()
     npass = sum(1 for r in RESULTS if r[2])
     nfail = len(RESULTS) - npass
     print("\n=== %d passed, %d failed ===" % (npass, nfail))
