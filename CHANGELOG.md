@@ -3,6 +3,19 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## 0.2.3 — 2026-09-23
+
+- **A Draftwatch logo.** A steel-blue tile with a "D" holding two diff-colored
+  strokes (one added, one deleted), drawn from plain shapes by the
+  maintainer-only `scripts/make_icon.py`. It appears in three places:
+  - **Native window:** the Dock icon (via pywebview's `start(icon=...)`, on
+    pywebview 5+) in place of Python's, and on macOS the menu bar and its
+    About/Hide/Quit items now say Draftwatch.
+  - **Browser tab:** served as the favicon.
+  - **Page header and About panel:** inline SVG, replacing the `+/−` mark.
+    The header logo spans both toolbar rows; app mode keeps it while still
+    hiding the wordmark.
+
 ## 0.2.2 — 2026-09-23
 
 - **Local images in the preview.** Relative image paths such as
