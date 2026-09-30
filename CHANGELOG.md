@@ -3,6 +3,13 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## 0.2.4 — 2026-09-29
+
+- Refined the Draftwatch logo to a flat blue tile and white D with equal-length
+  coral and green revision marks. The native window icon, browser favicon, and
+  in-app logo now share the same design.
+- Added a larger logo near the top of the README.
+
 ## 0.2.3 — 2026-09-23
 
 - **A Draftwatch logo.** A steel-blue tile with a "D" holding two diff-colored

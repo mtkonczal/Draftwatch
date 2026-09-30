@@ -2,10 +2,10 @@
 window's Dock icon) and favicon.png (the browser tab).
 
 The PNGs are committed, so end users never need Pillow; rerun this only to change
-the design (pip install pillow && python scripts/make_icon.py). The "D" is built
+the design (python3 -m pip install pillow && python3 scripts/make_icon.py). The "D" is built
 from plain shapes rather than a font glyph, so there are no font-licensing
-questions. Inside its counter sit two short strokes in the diff panel's add
-(green) and delete (red) colors: a draft being reviewed.
+questions. The two equal-length strokes use the diff panel's delete (coral)
+and add (green) colors: a draft being reviewed.
 """
 import os
 
@@ -17,11 +17,10 @@ ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                       "draftwatch", "assets")
 FAVICON = 64        # 32px tab icon at 2x
 
-TOP = (61, 130, 199)        # steel-blue gradient, around the app's --accent #2f6fb0
-BOTTOM = (33, 88, 146)
-PAPER = (245, 249, 254)     # --accent-fg: the light ink on the accent
-ADD = (126, 208, 138)       # diff add, brightened to read on blue
-DEL = (240, 142, 127)       # diff delete, likewise
+BLUE = (47, 111, 176)       # the default app accent, #2f6fb0
+PAPER = (247, 251, 255)
+ADD = (133, 210, 150)
+DEL = (241, 141, 127)
 
 
 def box(*v):
@@ -34,15 +33,9 @@ def main():
     # leaving room for the Dock's drop shadow.
     tile = Image.new("L", (w, w), 0)
     ImageDraw.Draw(tile).rounded_rectangle(box(100, 100, 924, 924),
-                                           radius=185 * K, fill=255)
-    grad = Image.new("RGB", (w, w))
-    gd = ImageDraw.Draw(grad)
-    for y in range(w):
-        t = y / (w - 1)
-        gd.line([(0, y), (w, y)],
-                fill=tuple(int(a + (b - a) * t) for a, b in zip(TOP, BOTTOM)))
+                                           radius=182 * K, fill=255)
     icon = Image.new("RGBA", (w, w), (0, 0, 0, 0))
-    icon.paste(grad, (0, 0), tile)
+    icon.paste(Image.new("RGB", (w, w), BLUE), (0, 0), tile)
 
     # The D: a rectangle joined to a right half-circle (the outer shape), minus
     # the same construction smaller (the counter). Both halves share cx.
@@ -55,14 +48,14 @@ def main():
         dd.rectangle(box(left, top, cx, bottom), fill=fill)
         dd.pieslice(box(cx - r, top, right, bottom), -90, 90, fill=fill)
 
-    half_disc(322, 262, 738, 762, 255)    # outer
-    half_disc(428, 368, 632, 656, 0)      # counter
+    half_disc(314, 251, 718, 765, 255)    # outer
+    half_disc(425, 354, 615, 662, 0)      # counter
     icon.paste(PAPER, (0, 0), d)
 
-    # Two "lines of text" in the counter: one added, one deleted.
+    # Equal strokes keep addition and deletion visually balanced at tab size.
     draw = ImageDraw.Draw(icon)
-    draw.rounded_rectangle(box(470, 452, 590, 494), radius=21 * K, fill=ADD)
-    draw.rounded_rectangle(box(470, 530, 562, 572), radius=21 * K, fill=DEL)
+    draw.rounded_rectangle(box(472, 433, 638, 481), radius=24 * K, fill=DEL)
+    draw.rounded_rectangle(box(472, 536, 638, 584), radius=24 * K, fill=ADD)
 
     # Favicon: the tile cropped full-bleed (no Dock-shadow margin), since a
     # browser tab gives the icon only a tiny square.

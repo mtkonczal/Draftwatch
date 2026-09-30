@@ -2072,15 +2072,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <!-- logo geometry mirrors scripts/make_icon.py (1024 grid, tile at 100..924) -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
   <defs>
-    <linearGradient id="dw-logo-bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3d82c7"/><stop offset="1" stop-color="#215892"/>
-    </linearGradient>
     <symbol id="dw-logo" viewBox="100 100 824 824">
-      <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#dw-logo-bg)"/>
-      <path fill="#f5f9fe" fill-rule="evenodd"
-            d="M322 262H488A250 250 0 0 1 488 762H322Z M428 368H488A144 144 0 0 1 488 656H428Z"/>
-      <rect x="470" y="452" width="120" height="42" rx="21" fill="#7ed08a"/>
-      <rect x="470" y="530" width="92" height="42" rx="21" fill="#f08e7f"/>
+      <rect x="100" y="100" width="824" height="824" rx="182" fill="#2f6fb0"/>
+      <path fill="#f7fbff" fill-rule="evenodd"
+            d="M314 251H461A257 257 0 0 1 461 765H314Z M425 354H461A154 154 0 0 1 461 662H425Z"/>
+      <rect x="472" y="433" width="166" height="48" rx="24" fill="#f18d7f"/>
+      <rect x="472" y="536" width="166" height="48" rx="24" fill="#85d296"/>
     </symbol>
   </defs>
 </svg>
