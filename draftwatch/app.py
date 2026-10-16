@@ -2784,6 +2784,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     var t = e.target;
     if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT" || t.tagName === "SELECT")) return;
     if (t && t.closest && t.closest(".cm-editor")) return;   // typing in CodeMirror
+    if (t && t.isContentEditable) return;                     // typing in the editable preview
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "n") { e.preventDefault(); nextChange(); }
     else if (e.key === "p") { e.preventDefault(); prevChange(); }
