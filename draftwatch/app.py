@@ -40,8 +40,8 @@ TERM_SUPPORTED = _term is not None
 # Single source of truth for the version and the date of the latest release.
 # __init__.py re-exports __version__; the About panel shows both (injected into
 # the served page from these constants).
-__version__ = "0.2.3"
-RELEASE_DATE = "2026-09-23"
+__version__ = "0.2.5"
+RELEASE_DATE = "2026-10-16"
 
 # Preferred port. When --port is not given, Draftwatch tries this first and
 # falls back to a free port if it is busy (so a second instance can start while

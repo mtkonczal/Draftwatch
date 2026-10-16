@@ -3,6 +3,14 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## 0.2.5 — 2026-10-16
+
+- Fixed: typing "n" or "p" in the editable preview jumped to the next or
+  previous change instead of inserting the letter. The n/p shortcuts now
+  ignore keystrokes in the preview, as they already did in the source editor.
+- Fixed: the About panel showed 0.2.3 in the 0.2.4 release. It now reports
+  the installed version.
+
 ## 0.2.4 — 2026-09-29
 
 - Refined the Draftwatch logo to a flat blue tile and white D with equal-length
