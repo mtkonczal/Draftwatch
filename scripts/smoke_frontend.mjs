@@ -89,6 +89,82 @@ try {
   const cmText = w.document.querySelector("#editor-host .cm-content").textContent;
   must(cmText.includes("the quick red fox"), "editor shows working text");
 
+  // Exercise the actual bundled editor and search panel, without Enter.
+  const searchText = "deer default deficit DEFICIT deficit\nlast default\n";
+  w.__lastES.onmessage({ data: JSON.stringify(Object.assign({}, payload, {
+    file: "search.md", raw_text: searchText, segments: [], hunks: [], diff_epoch: "search"
+  })) });
+  const editor = w.CM.EditorView.findFromDOM(w.document.querySelector("#editor-host .cm-editor"));
+  w.CM.openSearchPanel(editor);
+  let search = w.document.querySelector('.cm-search input[name="search"]');
+  search.focus();
+  const typeSearch = (text, composing = false) => {
+    search.value = text;
+    search.dispatchEvent(new w.InputEvent("input", { bubbles: true, isComposing: composing }));
+  };
+  const selected = () => editor.state.doc.sliceString(editor.state.selection.main.from, editor.state.selection.main.to);
+  const enterSearch = (shiftKey = false) => search.dispatchEvent(new w.KeyboardEvent("keydown", {
+    key: "Enter", keyCode: 13, shiftKey, bubbles: true, cancelable: true
+  }));
+  typeSearch("d");
+  must(selected() === "d" && editor.state.selection.main.from === 0, "typing d selects immediately");
+  typeSearch("de");
+  must(selected() === "de" && editor.state.selection.main.from === 0, "refining stays at the first match");
+  typeSearch("def");
+  must(selected() === "def" && editor.state.selection.main.from === 5, "typing def jumps without Enter");
+  typeSearch("deficit");
+  must(selected() === "deficit" && editor.state.selection.main.from === 13, "query refinement finds the passage");
+  must(w.document.activeElement === search, "live search keeps focus in the search field");
+  enterSearch();
+  must(selected() === "DEFICIT", "Enter advances to the next match");
+  enterSearch(true);
+  must(editor.state.selection.main.from === 13, "Shift-Enter goes to previous match");
+  typeSearch("def");
+  must(editor.state.selection.main.from === 13 && selected() === "def", "backspace refines from the navigated match");
+  const beforeMissing = editor.state.selection.main;
+  typeSearch("no such passage");
+  must(editor.state.selection.main.eq(beforeMissing), "no results leaves selection in place");
+  typeSearch("");
+  must(editor.state.selection.main.eq(beforeMissing), "clearing query leaves selection in place");
+  typeSearch("default");
+  must(editor.state.selection.main.from === searchText.lastIndexOf("default"), "pasted query finds next match from origin");
+  enterSearch();
+  must(editor.state.selection.main.from === 5, "Enter wraps to the beginning");
+  typeSearch("DEF");
+  w.document.querySelector('.cm-search input[name="case"]').click();
+  must(selected() === "DEF", "case-sensitive option navigates immediately");
+  w.document.querySelector('.cm-search input[name="word"]').click();
+  must(selected() === "DEF", "whole-word query with no match leaves selection alone");
+  typeSearch("DEFICIT");
+  must(selected() === "DEFICIT", "whole-word search matches a complete word");
+  w.document.querySelector('.cm-search input[name="re"]').click();
+  typeSearch("[");
+  must(selected() === "DEFICIT", "incomplete regular expression does not throw or navigate");
+  typeSearch("D.FICIT");
+  must(selected() === "DEFICIT", "valid regular expression navigates");
+  const replace = w.document.querySelector('.cm-search input[name="replace"]');
+  replace.value = "replacement";
+  replace.dispatchEvent(new w.KeyboardEvent("keyup", { key: "t", bubbles: true }));
+  must(selected() === "DEFICIT" && editor.state.doc.toString() === searchText,
+       "replacement text neither navigates nor edits the document");
+  w.CM.closeSearchPanel(editor);
+  editor.dispatch({ selection: { anchor: searchText.length } });
+  w.CM.openSearchPanel(editor);
+  search = w.document.querySelector('.cm-search input[name="search"]');
+  typeSearch("deficit");
+  w.document.querySelector('.cm-search input[name="case"]').click();
+  w.document.querySelector('.cm-search input[name="re"]').click();
+  must(editor.state.selection.main.from === 13, "search wraps from end of document");
+  const beforeComposition = editor.state.selection.main;
+  typeSearch("default", true);
+  search.dispatchEvent(new w.KeyboardEvent("keyup", { key: "Process", isComposing: true, bubbles: true }));
+  must(editor.state.selection.main.eq(beforeComposition), "IME composition does not navigate early");
+  search.dispatchEvent(new w.CompositionEvent("compositionend", { bubbles: true }));
+  must(selected() === "default", "committed IME input navigates");
+  must(editor.state.doc.toString() === searchText, "search never changes the document");
+  w.CM.closeSearchPanel(editor);
+  w.__lastES.onmessage({ data: JSON.stringify(payload) });
+
   // markdown preview: renders the buffer, strips scripts/handlers (the
   // sanitizer is load-bearing — the .md author is a semi-trusted AI agent)
   const evil = Object.assign({}, payload, {

@@ -64,6 +64,7 @@ Click **terminal** in the toolbar to open a third panel running a real shell in 
 - Switchable baseline: last push, HEAD, or an earlier commit.
 - Jump between changes or collapse to a changes-only view for long documents.
 - Editable markdown preview alongside the raw source.
+- Search as you type with Ctrl/Cmd-F; Enter finds the next match and Shift+Enter finds the previous one.
 - You and the agent can both edit; your unsaved work is never clobbered when the file changes on disk.
 - Embedded terminal panel (macOS/Linux): run your agent next to the diff without leaving the window.
 - Resizable panels: drag the dividers to change the split (double-click to reset).

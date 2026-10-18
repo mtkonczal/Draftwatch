@@ -3,6 +3,13 @@
 All notable changes to draftwatch are recorded here. Versions are git tags
 (`vX.Y.Z`); the PyPI package tracks them.
 
+## 0.2.6 — 2026-10-18
+
+- Search now jumps to a matching passage as you type, paste, or delete text.
+  Refining a query searches from a stable starting position; Enter and
+  Shift+Enter still move to the next and previous matches. Case-sensitive,
+  whole-word, and regular-expression searches keep working.
+
 ## 0.2.5 — 2026-10-16
 
 - Fixed: typing "n" or "p" in the editable preview jumped to the next or

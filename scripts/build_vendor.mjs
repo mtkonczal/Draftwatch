@@ -15,12 +15,12 @@ mkdirSync(assets, { recursive: true });
 // ---- CodeMirror 6: one IIFE exposing a `CM` global with everything the
 //      editor (draftwatch/app.py) uses ----------------------------------------
 const cmEntry = `
-export { EditorState, Compartment } from "@codemirror/state";
+export { EditorState, StateField, Compartment } from "@codemirror/state";
 export { EditorView, keymap, drawSelection, placeholder } from "@codemirror/view";
 export { defaultKeymap, history, historyKeymap, undo, redo } from "@codemirror/commands";
 export { syntaxHighlighting, defaultHighlightStyle, HighlightStyle } from "@codemirror/language";
 export { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-export { searchKeymap, search, openSearchPanel, highlightSelectionMatches } from "@codemirror/search";
+export { searchKeymap, search, openSearchPanel, closeSearchPanel, getSearchQuery, setSearchQuery, SearchQuery, searchPanelOpen, highlightSelectionMatches } from "@codemirror/search";
 export { tags } from "@lezer/highlight";
 `;
 

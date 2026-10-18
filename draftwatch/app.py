@@ -40,8 +40,8 @@ TERM_SUPPORTED = _term is not None
 # Single source of truth for the version and the date of the latest release.
 # __init__.py re-exports __version__; the About panel shows both (injected into
 # the served page from these constants).
-__version__ = "0.2.5"
-RELEASE_DATE = "2026-10-16"
+__version__ = "0.2.6"
+RELEASE_DATE = "2026-10-18"
 
 # Preferred port. When --port is not given, Draftwatch tries this first and
 # falls back to a free port if it is busy (so a second instance can start while
@@ -2366,6 +2366,37 @@ INDEX_HTML = r"""<!DOCTYPE html>
   ];
 
   function editorExtensions() {
+    // Keep a fixed origin while a query is refined. Explicit navigation (Enter,
+    // next/previous, or moving the caret) establishes a new origin instead.
+    var searchOrigin = CM.StateField.define({
+      create: function (state) { return state.selection.main.from; },
+      update: function (origin, tr) {
+        if (CM.searchPanelOpen(tr.startState) !== CM.searchPanelOpen(tr.state) ||
+            (tr.selection && CM.getSearchQuery(tr.startState).eq(CM.getSearchQuery(tr.state)))) {
+          return tr.state.selection.main.from;
+        }
+        return tr.changes.mapPos(origin);
+      }
+    });
+    var liveSearch = CM.EditorState.transactionFilter.of(function (tr) {
+      var effect = tr.effects.find(function (e) { return e.is(CM.setSearchQuery); });
+      if (!effect || !CM.searchPanelOpen(tr.state)) return tr;
+      var query = effect.value, previous = CM.getSearchQuery(tr.startState);
+      // Editing replacement text must never navigate or replace anything.
+      if (!query.valid || (query.search === previous.search &&
+          query.caseSensitive === previous.caseSensitive &&
+          query.regexp === previous.regexp && query.wholeWord === previous.wholeWord)) return tr;
+      var origin = tr.changes.mapPos(tr.startState.field(searchOrigin));
+      var cursor = query.getCursor(tr.state, origin).next();
+      if (cursor.done) cursor = query.getCursor(tr.state, 0).next();
+      if (cursor.done) return tr;
+      return [tr, {
+        selection: { anchor: cursor.value.from, head: cursor.value.to },
+        effects: CM.EditorView.scrollIntoView(cursor.value.from, { y: "center" }),
+        userEvent: "select.search",
+        sequential: true
+      }];
+    });
     return [
       CM.history(),
       CM.drawSelection(),
@@ -2374,6 +2405,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       CM.syntaxHighlighting(mdHighlight),
       CM.syntaxHighlighting(CM.defaultHighlightStyle, { fallback: true }),
       CM.search({ top: true }),
+      searchOrigin,
+      liveSearch,
       CM.highlightSelectionMatches(),
       wrapInput,
       CM.keymap.of(fmtKeymap.concat(CM.searchKeymap, CM.historyKeymap, CM.defaultKeymap)),
@@ -2391,6 +2424,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
     state: CM.EditorState.create({ doc: "", extensions: editorExtensions() }),
     parent: $("editor-host")
   });
+
+  // CodeMirror's default panel commits on keyup. Use input too so paste, cut,
+  // and other text input navigate immediately, while leaving IME composition
+  // undisturbed until the composed text has been committed.
+  function syncSearchInput(e) {
+    if (e.isComposing || !e.target.matches('.cm-search input[name="search"]')) return;
+    var query = new CM.SearchQuery(Object.assign({}, CM.getSearchQuery(ed.state), {
+      search: e.target.value
+    }));
+    if (!query.eq(CM.getSearchQuery(ed.state))) {
+      ed.dispatch({ effects: CM.setSearchQuery.of(query) });
+    }
+  }
+  $("editor-host").addEventListener("input", syncSearchInput);
+  $("editor-host").addEventListener("compositionend", syncSearchInput);
+  $("editor-host").addEventListener("keyup", function (e) {
+    if (e.isComposing && e.target.matches('.cm-search input[name="search"]')) e.stopPropagation();
+  }, true);
 
   function editorText() { return ed.state.doc.toString(); }
 
